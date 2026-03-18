@@ -8,3 +8,12 @@ frontend/dist/
 # Backend runtime artifacts
 backend/data/
 *.log
+
+# Python sidecar artifacts
+services/youtube_audio_service/.venv/
+services/youtube_audio_service/.venv310/
+services/youtube_audio_service/__pycache__/
+services/youtube_audio_service/.pytest_cache/
+
+# Local whisper.cpp checkout/build
+tools/whisper.cpp/

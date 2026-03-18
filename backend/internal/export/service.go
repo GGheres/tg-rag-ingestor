@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"tg-rag-ingestor/backend/internal/cleaning"
+	"tg-rag-ingestor/backend/internal/models"
+	"tg-rag-ingestor/backend/internal/naming"
 	"tg-rag-ingestor/backend/internal/storage"
 )
 
@@ -77,7 +79,17 @@ func (s *Service) ExportJSONL(ctx context.Context, req JSONLRequest) (JSONLResul
 		return JSONLResult{}, err
 	}
 
-	filePath := filepath.Join(s.exportDir, buildFilename(mode, req.SourceID, format))
+	var exportSource *models.Source
+	if req.SourceID != nil && strings.TrimSpace(*req.SourceID) != "" {
+		source, err := s.repo.GetSource(ctx, strings.TrimSpace(*req.SourceID))
+		if err != nil {
+			_ = s.repo.FailExport(ctx, record.ID, err.Error())
+			return JSONLResult{}, err
+		}
+		exportSource = &source
+	}
+
+	filePath := filepath.Join(s.exportDir, naming.ExportFilename(exportSource, mode, format, time.Now()))
 	file, err := os.Create(filePath)
 	if err != nil {
 		_ = s.repo.FailExport(ctx, record.ID, err.Error())
@@ -146,19 +158,24 @@ func (s *Service) ExportJSONL(ctx context.Context, req JSONLRequest) (JSONLResul
 				chunkRows = append(chunkRows, buildTrashChunkRows(buildTrashDocumentRows(trashRows))...)
 			}
 			for _, row := range chunkRows {
+				metadata := map[string]any{
+					"source":           "telegram",
+					"source_subtype":   "public_channel_post_chunk",
+					"channel_username": row.ChannelUsername,
+					"message_id":       row.MessageID,
+					"url":              row.URL,
+					"published_at":     row.PublishedAt,
+					"language":         row.LanguageCode,
+					"chunk_index":      row.ChunkIndex,
+				}
+				for key, value := range row.Metadata {
+					metadata[key] = value
+				}
+
 				entry := map[string]any{
 					"doc_id": row.DocID,
 					"text":   row.Text,
-					"metadata": map[string]any{
-						"source":           "telegram",
-						"source_subtype":   "public_channel_post_chunk",
-						"channel_username": row.ChannelUsername,
-						"message_id":       row.MessageID,
-						"url":              row.URL,
-						"published_at":     row.PublishedAt,
-						"language":         row.LanguageCode,
-						"chunk_index":      row.ChunkIndex,
-					},
+					"metadata": metadata,
 				}
 				if err := writeJSONLLine(writer, entry); err != nil {
 					_ = s.repo.FailExport(ctx, record.ID, err.Error())
@@ -204,19 +221,6 @@ func (s *Service) ExportJSONL(ctx context.Context, req JSONLRequest) (JSONLResul
 		FilePath: filePath,
 		RowCount: rows,
 	}, nil
-}
-
-func buildFilename(mode string, sourceID *string, format string) string {
-	sourcePart := "all"
-	if sourceID != nil && *sourceID != "" {
-		sourcePart = *sourceID
-	}
-	ts := time.Now().UTC().Format("20060102_150405")
-	extension := ".jsonl"
-	if format == "txt_rag" {
-		extension = ".txt"
-	}
-	return fmt.Sprintf("%s_%s_%s%s", mode, sourcePart, ts, extension)
 }
 
 func writeJSONLLine(writer *bufio.Writer, value any) error {

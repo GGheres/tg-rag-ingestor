@@ -1,4 +1,4 @@
-.PHONY: up down ps logs migrate api worker collector frontend backend-build frontend-build check
+.PHONY: up down ps logs migrate api worker collector frontend youtube-service backend-build frontend-build check
 
 up:
 	docker compose up -d
@@ -26,6 +26,9 @@ collector:
 
 frontend:
 	cd frontend && npm install && npm run dev
+
+youtube-service:
+	cd services/youtube_audio_service && uvicorn app:app --host 0.0.0.0 --port 8090
 
 backend-build:
 	cd backend && go build ./...

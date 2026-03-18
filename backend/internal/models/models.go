@@ -5,6 +5,8 @@ import "time"
 type Source struct {
 	ID                 string     `json:"id"`
 	SourceType         string     `json:"source_type"`
+	Provider           *string    `json:"provider,omitempty"`
+	ExternalID         *string    `json:"external_id,omitempty"`
 	TelegramChannelID  *int64     `json:"telegram_channel_id,omitempty"`
 	TelegramAccessHash *int64     `json:"telegram_access_hash,omitempty"`
 	Username           *string    `json:"username,omitempty"`
@@ -45,7 +47,7 @@ type RawMessage struct {
 type Document struct {
 	ID            string         `json:"id"`
 	SourceID      string         `json:"source_id"`
-	RawMessageID  string         `json:"raw_message_id"`
+	RawMessageID  *string        `json:"raw_message_id,omitempty"`
 	ExternalDocID string         `json:"external_doc_id"`
 	Title         *string        `json:"title,omitempty"`
 	TextClean     string         `json:"text_clean"`
@@ -140,4 +142,17 @@ type SourceStats struct {
 	RawMessages int `json:"raw_messages"`
 	Documents   int `json:"documents"`
 	Chunks      int `json:"chunks"`
+}
+
+type YouTubeAudioArtifact struct {
+	ID            string         `json:"id"`
+	SourceID      string         `json:"source_id"`
+	Provider      string         `json:"provider"`
+	VideoID       string         `json:"video_id"`
+	AudioFilePath *string        `json:"audio_file_path,omitempty"`
+	AudioStatus   string         `json:"audio_status"`
+	RawJSON       map[string]any `json:"raw_json"`
+	ErrorText     *string        `json:"error_text,omitempty"`
+	CreatedAt     time.Time      `json:"created_at"`
+	UpdatedAt     time.Time      `json:"updated_at"`
 }

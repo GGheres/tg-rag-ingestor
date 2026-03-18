@@ -1,6 +1,8 @@
 export type Source = {
   id: string;
   source_type: string;
+  provider?: string | null;
+  external_id?: string | null;
   telegram_channel_id?: number | null;
   telegram_access_hash?: number | null;
   username?: string | null;
@@ -34,7 +36,7 @@ export type RawMessage = {
 export type Document = {
   id: string;
   source_id: string;
-  raw_message_id: string;
+  raw_message_id?: string | null;
   external_doc_id: string;
   text_clean: string;
   text_original?: string | null;
@@ -50,30 +52,6 @@ export type Document = {
   created_at: string;
 };
 
-export type ParsedPost = {
-  document_id: string;
-  source_id: string;
-  raw_message_id: string;
-  external_doc_id: string;
-  channel_username: string;
-  channel_title?: string | null;
-  channel_url: string;
-  post_url: string;
-  telegram_message_id: number;
-  published_at?: string | null;
-  created_at: string;
-  text_clean: string;
-  text_original?: string | null;
-  language_code?: string | null;
-  hashtags: string[];
-  mentions: string[];
-  links: string[];
-  is_duplicate: boolean;
-  is_forward: boolean;
-  quality_score?: number | null;
-  metadata: Record<string, unknown>;
-};
-
 export type Chunk = {
   id: string;
   document_id: string;
@@ -84,52 +62,48 @@ export type Chunk = {
   embedding_status: string;
 };
 
-export type Job = {
+export type YouTubeAudioArtifact = {
   id: string;
-  job_type: string;
-  source_id?: string | null;
-  status: string;
-  payload: Record<string, unknown>;
-  progress_total: number;
-  progress_done: number;
-  result_json?: Record<string, unknown>;
+  source_id: string;
+  provider: string;
+  video_id: string;
+  audio_file_path?: string | null;
+  audio_status: string;
+  raw_json: Record<string, unknown>;
   error_text?: string | null;
   created_at: string;
-  started_at?: string | null;
-  finished_at?: string | null;
+  updated_at: string;
 };
 
-export type ExportRecord = {
-  id: string;
-  export_type: string;
-  status: string;
-  source_id?: string | null;
-  file_path?: string | null;
-  row_count: number;
-  error_text?: string | null;
-  created_at: string;
-  finished_at?: string | null;
-};
-
-export type PreviewResult = {
-  cleaned: string;
-  is_trash: boolean;
-  links: string[];
-  hashtags: string[];
-  mentions: string[];
-  chunks: Array<{
-    index: number;
-    text: string;
-    char_count: number;
-    token_count: number;
-  }>;
-};
-
-export type ImportJSONResult = {
+export type YouTubeAudioDetails = {
   source: Source;
-  imported_count: number;
-  processed_count: number;
-  duplicate_count: number;
-  trash_count: number;
-  chunk_count: number;
+  artifact?: YouTubeAudioArtifact;
+};
+
+export type FilesystemSkippedArchive = {
+  path: string;
+  reason: string;
+};
+
+export type FilesystemScannedFile = {
+  name: string;
+  logical_path: string;
+  resolved_path: string;
+  size_bytes: number;
+  origin: string;
+  archive_path?: string | null;
+  archive_member_path?: string | null;
+};
+
+export type FilesystemScanResult = {
+  root_path: string;
+  scanned_at: string;
+  total_files: number;
+  regular_files: number;
+  extracted_files: number;
+  archives_processed: number;
+  supported_archive_extensions: string[];
+  unsupported_archive_formats: string[];
+  skipped_archives: FilesystemSkippedArchive[];
+  files: FilesystemScannedFile[];
 };

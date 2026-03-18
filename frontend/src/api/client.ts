@@ -1,21 +1,20 @@
 import type {
   Chunk,
   Document,
-  ExportRecord,
-  ImportJSONResult,
-  Job,
-  PreviewResult,
-  ParsedPost,
+  FilesystemScanResult,
   RawMessage,
   Source,
   SourceStats,
+  YouTubeAudioDetails,
 } from "../types";
 
-const API_URL = "http://localhost:8080";
+const API_URL = "http://localhost:18080";
+const PY_SERVICE_URL = "http://localhost:8090";
 
 type APIError = {
   error?: {
     code?: string;
+    stage?: string;
     message?: string;
   };
 };
@@ -24,20 +23,29 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${API_URL}${path}`, init);
   if (!res.ok) {
     const body = (await res.json().catch(() => ({}))) as APIError;
-    throw new Error(body.error?.message || `Request failed with ${res.status}`);
+    const code = body.error?.code?.trim();
+    const stage = body.error?.stage?.trim();
+    const message = body.error?.message?.trim();
+    const parts = [stage, code].filter((item): item is string => Boolean(item));
+    if (parts.length > 0 && message) {
+      throw new Error(`${parts.join("/")} - ${message}`);
+    }
+    if (code && message) {
+      throw new Error(`${code}: ${message}`);
+    }
+    if (message) {
+      throw new Error(message);
+    }
+    throw new Error(`HTTP ${res.status} ${res.statusText}`);
   }
   return (await res.json()) as T;
-}
-
-export function getHealth() {
-  return request<{ ok: boolean; postgres: string }>("/health");
 }
 
 export function getSources() {
   return request<Source[]>("/api/sources");
 }
 
-export function createSource(payload: { url?: string; username?: string; title?: string }) {
+export function createSource(payload: { url?: string; username?: string }) {
   return request<Source>("/api/sources", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -45,15 +53,48 @@ export function createSource(payload: { url?: string; username?: string; title?:
   });
 }
 
-export function importJSONSource(formData: FormData) {
-  return request<ImportJSONResult>("/api/imports/json", {
+export function createYouTubeSource(payload: { url: string }) {
+  return request<Source>("/api/youtube/sources", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export function importJSONFile(payload: { file: File }) {
+  const formData = new FormData();
+  formData.set("file", payload.file);
+  return request<{
+    source: Source;
+    imported_count: number;
+    processed_count: number;
+    duplicate_count: number;
+    trash_count: number;
+    chunk_count: number;
+  }>("/api/imports/json", {
     method: "POST",
     body: formData,
   });
 }
 
+export function scanFilesystemDirectory(payload: { path: string }) {
+  return request<FilesystemScanResult>("/api/filesystem/scan", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
 export function getSource(id: string) {
   return request<{ source: Source; stats: SourceStats }>(`/api/sources/${id}`);
+}
+
+export function getYouTubeSource(id: string) {
+  return request<{ source: Source; stats: SourceStats }>(`/api/youtube/sources/${id}`);
+}
+
+export function getYouTubeSourceAudio(id: string) {
+  return request<YouTubeAudioDetails>(`/api/youtube/sources/${id}/audio`);
 }
 
 export function syncSource(
@@ -79,6 +120,26 @@ export function syncSource(
   });
 }
 
+export function downloadYouTubeAudioSource(id: string) {
+  return request<{
+    status: "queued";
+    source_id: string;
+    stage: "download_audio";
+  }>(`/api/youtube/sources/${id}/download-audio`, {
+    method: "POST",
+  });
+}
+
+export function transcribeYouTubeAudioSource(id: string) {
+  return request<{
+    status: "queued";
+    source_id: string;
+    stage: "transcribe_audio";
+  }>(`/api/youtube/sources/${id}/transcribe-audio`, {
+    method: "POST",
+  });
+}
+
 export function getRawMessages(sourceID: string, limit = 100) {
   return request<RawMessage[]>(`/api/sources/${sourceID}/raw-messages?limit=${limit}`);
 }
@@ -87,56 +148,36 @@ export function getDocuments(sourceID: string, limit = 100) {
   return request<Document[]>(`/api/sources/${sourceID}/documents?limit=${limit}`);
 }
 
-export function getParsedPosts(payload: {
-  source_ids: string[];
-  limit_per_source?: number;
-  include_duplicates?: boolean;
-}) {
-  return request<ParsedPost[]>("/api/posts/parsed", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
-}
-
 export function getDocument(id: string) {
   return request<{ document: Document; chunks: Chunk[] }>(`/api/documents/${id}`);
 }
 
-export function previewClean(text: string) {
-  return request<PreviewResult>("/api/preview/clean", {
+export function createFullSourceTXTExport(sourceID: string) {
+  return request<{
+    export_id: string;
+    file_path: string;
+    row_count: number;
+  }>("/api/exports/jsonl", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ text }),
+    body: JSON.stringify({
+      source_id: sourceID,
+      mode: "documents",
+      format: "txt_rag",
+      include_duplicates: true,
+      include_trash: true,
+    }),
   });
 }
 
-export function createExport(payload: {
-  source_id?: string;
-  mode?: "documents" | "chunks";
-  format?: "jsonl" | "txt_rag";
-  include_duplicates?: boolean;
-  include_trash?: boolean;
-}) {
-  return request<{ export_id: string; file_path: string; row_count: number }>("/api/exports/jsonl", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
-}
-
-export function getExports() {
-  return request<ExportRecord[]>("/api/exports");
-}
-
-export function getJobs() {
-  return request<Job[]>("/api/jobs");
+export function exportDownloadURL(exportID: string) {
+  return `${API_URL}/api/exports/${exportID}/download`;
 }
 
 export function documentDownloadURL(id: string, format: "txt" | "json" = "txt") {
   return `${API_URL}/api/documents/${id}/download?format=${format}`;
 }
 
-export function exportDownloadURL(id: string) {
-  return `${API_URL}/api/exports/${id}/download`;
+export function youTubeAudioDownloadURL(audioFilePath: string) {
+  return `${PY_SERVICE_URL}/api/download-youtube-audio-file?path=${encodeURIComponent(audioFilePath)}`;
 }

@@ -42,15 +42,18 @@ services:
       QDRANT_URL: http://qdrant:6333
       APP_PORT: "8080"
       CORS_ALLOWED_ORIGIN: http://localhost:5173
+      PY_YOUTUBE_AUDIO_SERVICE_URL: http://youtube-audio-service:8090
       GOPROXY: "off"
       GOSUMDB: "off"
     command: sh -lc "/usr/local/go/bin/go run ./cmd/api"
     ports:
-      - "8080:8080"
+      - "18080:8080"
     volumes:
       - ./:/app
       - ${HOME}/go/pkg/mod:/go/pkg/mod
       - ${HOME}/Library/Caches/go-build:/root/.cache/go-build
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       postgres:
         condition: service_healthy
@@ -58,6 +61,37 @@ services:
         condition: service_started
       qdrant:
         condition: service_started
+      youtube-audio-service:
+        condition: service_started
+
+  youtube-audio-service:
+    build:
+      context: .
+      dockerfile: services/youtube_audio_service/Dockerfile
+    env_file:
+      - .env
+    environment:
+      YOUTUBE_AUDIO_STORAGE_DIR: ${YOUTUBE_AUDIO_STORAGE_DIR:-/srv/audio_storage}
+      YTDLP_AUDIO_FORMAT: ${YTDLP_AUDIO_FORMAT:-mp3}
+      YTDLP_AUDIO_QUALITY: ${YTDLP_AUDIO_QUALITY:-5}
+      DEEPGRAM_API_KEY: ${DEEPGRAM_API_KEY:-}
+      DEEPGRAM_API_KEY_FALLBACK: ${DEEPGRAM_API_KEY_FALLBACK:-}
+      DEEPGRAM_API_KEYS: ${DEEPGRAM_API_KEYS:-}
+      DEEPGRAM_MODEL: ${DEEPGRAM_MODEL:-nova-3}
+      DEEPGRAM_DETECT_LANGUAGE: ${DEEPGRAM_DETECT_LANGUAGE:-1}
+      DEEPGRAM_SMART_FORMAT: ${DEEPGRAM_SMART_FORMAT:-1}
+      DEEPGRAM_PUNCTUATE: ${DEEPGRAM_PUNCTUATE:-1}
+      DEEPGRAM_PARAGRAPHS: ${DEEPGRAM_PARAGRAPHS:-0}
+      DEEPGRAM_CLIENT_TIMEOUT_SECONDS: ${DEEPGRAM_CLIENT_TIMEOUT_SECONDS:-900}
+      DEEPGRAM_REQUEST_TIMEOUT_SECONDS: ${DEEPGRAM_REQUEST_TIMEOUT_SECONDS:-7200}
+      DEEPGRAM_SDK_MAX_RETRIES: ${DEEPGRAM_SDK_MAX_RETRIES:-3}
+      DEEPGRAM_ATTEMPTS_PER_KEY: ${DEEPGRAM_ATTEMPTS_PER_KEY:-3}
+      DEEPGRAM_RETRY_BASE_SECONDS: ${DEEPGRAM_RETRY_BASE_SECONDS:-2}
+      DEEPGRAM_RETRY_MAX_SECONDS: ${DEEPGRAM_RETRY_MAX_SECONDS:-30}
+    ports:
+      - "8090:8090"
+    volumes:
+      - youtube_audio_data:/srv/audio_storage
 
   frontend:
     image: node:22-alpine
@@ -77,3 +111,4 @@ volumes:
   redis_data:
   qdrant_data:
   frontend_node_modules:
+  youtube_audio_data:

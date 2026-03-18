@@ -28,6 +28,8 @@ func (r *Repository) Ping(ctx context.Context) error {
 
 type CreateSourceInput struct {
 	SourceType string
+	Provider   *string
+	ExternalID *string
 	Username   *string
 	Title      *string
 	URL        string
@@ -36,13 +38,15 @@ type CreateSourceInput struct {
 func (r *Repository) CreateSource(ctx context.Context, input CreateSourceInput) (models.Source, error) {
 	var source models.Source
 	err := r.pool.QueryRow(ctx, `
-		insert into sources (source_type, username, title, url, status)
-		values ($1, $2, $3, $4, 'active')
-		returning id, source_type, telegram_channel_id, telegram_access_hash, username, title, url, status,
+		insert into sources (source_type, provider, external_id, username, title, url, status)
+		values ($1, $2, $3, $4, $5, $6, 'active')
+		returning id, source_type, provider, external_id, telegram_channel_id, telegram_access_hash, username, title, url, status,
 		          last_message_id, last_synced_at, last_error, created_at, updated_at
-	`, input.SourceType, input.Username, input.Title, input.URL).Scan(
+	`, input.SourceType, input.Provider, input.ExternalID, input.Username, input.Title, input.URL).Scan(
 		&source.ID,
 		&source.SourceType,
+		&source.Provider,
+		&source.ExternalID,
 		&source.TelegramChannelID,
 		&source.TelegramAccessHash,
 		&source.Username,
@@ -60,7 +64,7 @@ func (r *Repository) CreateSource(ctx context.Context, input CreateSourceInput) 
 
 func (r *Repository) ListSources(ctx context.Context) ([]models.Source, error) {
 	rows, err := r.pool.Query(ctx, `
-		select id, source_type, telegram_channel_id, telegram_access_hash, username, title, url, status,
+		select id, source_type, provider, external_id, telegram_channel_id, telegram_access_hash, username, title, url, status,
 		       last_message_id, last_synced_at, last_error, created_at, updated_at
 		from sources
 		order by created_at desc
@@ -76,6 +80,8 @@ func (r *Repository) ListSources(ctx context.Context) ([]models.Source, error) {
 		if err := rows.Scan(
 			&source.ID,
 			&source.SourceType,
+			&source.Provider,
+			&source.ExternalID,
 			&source.TelegramChannelID,
 			&source.TelegramAccessHash,
 			&source.Username,
@@ -99,13 +105,15 @@ func (r *Repository) ListSources(ctx context.Context) ([]models.Source, error) {
 func (r *Repository) GetSource(ctx context.Context, sourceID string) (models.Source, error) {
 	var source models.Source
 	err := r.pool.QueryRow(ctx, `
-		select id, source_type, telegram_channel_id, telegram_access_hash, username, title, url, status,
+		select id, source_type, provider, external_id, telegram_channel_id, telegram_access_hash, username, title, url, status,
 		       last_message_id, last_synced_at, last_error, created_at, updated_at
 		from sources
 		where id = $1
 	`, sourceID).Scan(
 		&source.ID,
 		&source.SourceType,
+		&source.Provider,
+		&source.ExternalID,
 		&source.TelegramChannelID,
 		&source.TelegramAccessHash,
 		&source.Username,
@@ -119,6 +127,17 @@ func (r *Repository) GetSource(ctx context.Context, sourceID string) (models.Sou
 		&source.UpdatedAt,
 	)
 	return source, err
+}
+
+func (r *Repository) GetSourceByURL(ctx context.Context, sourceURL string) (models.Source, error) {
+	row := r.pool.QueryRow(ctx, `
+		select id, source_type, provider, external_id, telegram_channel_id, telegram_access_hash, username, title, url, status,
+		       last_message_id, last_synced_at, last_error, created_at, updated_at
+		from sources
+		where url = $1
+	`, sourceURL)
+
+	return scanSource(row)
 }
 
 func (r *Repository) UpdateSourceResolvedChannel(ctx context.Context, sourceID string, channelID, accessHash *int64, username, title, url string) error {
@@ -409,7 +428,7 @@ func (r *Repository) FindCanonicalDocumentByHash(ctx context.Context, sourceID, 
 
 type SaveDocumentInput struct {
 	SourceID      string
-	RawMessageID  string
+	RawMessageID  *string
 	ExternalDocID string
 	Title         *string
 	TextClean     string
@@ -558,17 +577,22 @@ func (r *Repository) DeleteChunksByDocumentID(ctx context.Context, documentID st
 	return err
 }
 
-func (r *Repository) InsertChunks(ctx context.Context, documentID string, sourceID string, rawMessageID string, chunks []chunking.Chunk) error {
+func (r *Repository) InsertChunks(ctx context.Context, documentID string, sourceID string, rawMessageID *string, chunks []chunking.Chunk) error {
 	if len(chunks) == 0 {
 		return nil
 	}
 	for _, item := range chunks {
 		item.Text = sanitizeUTF8String(item.Text)
-		metadataJSON, err := marshalJSON(map[string]any{
+		metadata := map[string]any{
 			"source_id":      sourceID,
 			"raw_message_id": rawMessageID,
 			"chunk_index":    item.Index,
-		})
+		}
+		for key, value := range item.Metadata {
+			metadata[key] = value
+		}
+
+		metadataJSON, err := marshalJSON(metadata)
 		if err != nil {
 			return err
 		}
@@ -936,6 +960,38 @@ func (r *Repository) ListJobs(ctx context.Context, limit int) ([]models.Job, err
 	return out, rows.Err()
 }
 
+func (r *Repository) FailActiveJobsBySourceID(ctx context.Context, sourceID string, errText string) (int64, error) {
+	resultJSON, err := marshalJSON(map[string]any{
+		"error": errText,
+	})
+	if err != nil {
+		return 0, err
+	}
+
+	tag, err := r.pool.Exec(ctx, `
+		update jobs
+		set status = 'failed',
+		    error_text = $2,
+		    result_json = $3,
+		    finished_at = now()
+		where source_id = $1
+		  and status in ('queued', 'running')
+	`, sourceID, errText, resultJSON)
+	if err != nil {
+		return 0, err
+	}
+
+	return tag.RowsAffected(), nil
+}
+
+func (r *Repository) DeleteJobsBySourceID(ctx context.Context, sourceID string) (int64, error) {
+	tag, err := r.pool.Exec(ctx, `delete from jobs where source_id = $1`, sourceID)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
+}
+
 type CreateExportInput struct {
 	ExportType string
 	SourceID   *string
@@ -1058,8 +1114,8 @@ func (r *Repository) ListExportDocuments(ctx context.Context, sourceID *string, 
 	query := `
 		select d.external_doc_id,
 		       d.text_clean,
-		       coalesce(s.username, ''),
-		       rm.telegram_message_id,
+		       coalesce(s.username, d.metadata->>'channel_username', ''),
+		       coalesce(rm.telegram_message_id, 0),
 		       coalesce(d.metadata->>'url', s.url, ''),
 		       d.published_at,
 		       d.language_code,
@@ -1068,7 +1124,7 @@ func (r *Repository) ListExportDocuments(ctx context.Context, sourceID *string, 
 		       d.metadata
 		from documents d
 		join sources s on s.id = d.source_id
-		join raw_messages rm on rm.id = d.raw_message_id
+		left join raw_messages rm on rm.id = d.raw_message_id
 		where 1=1
 	`
 	args := []any{}
@@ -1120,6 +1176,7 @@ type ExportChunkRow struct {
 	URL             string
 	PublishedAt     *time.Time
 	LanguageCode    *string
+	Metadata        map[string]any
 }
 
 func (r *Repository) ListExportChunks(ctx context.Context, sourceID *string, includeDuplicates bool) ([]ExportChunkRow, error) {
@@ -1127,15 +1184,16 @@ func (r *Repository) ListExportChunks(ctx context.Context, sourceID *string, inc
 		select d.external_doc_id,
 		       c.chunk_index,
 		       c.text,
-		       coalesce(s.username, ''),
-		       rm.telegram_message_id,
+		       coalesce(s.username, d.metadata->>'channel_username', ''),
+		       coalesce(rm.telegram_message_id, 0),
 		       coalesce(d.metadata->>'url', s.url, ''),
 		       d.published_at,
-		       d.language_code
+		       d.language_code,
+		       c.metadata
 		from chunks c
 		join documents d on d.id = c.document_id
 		join sources s on s.id = d.source_id
-		join raw_messages rm on rm.id = d.raw_message_id
+		left join raw_messages rm on rm.id = d.raw_message_id
 		where 1=1
 	`
 	args := []any{}
@@ -1157,6 +1215,7 @@ func (r *Repository) ListExportChunks(ctx context.Context, sourceID *string, inc
 	var out []ExportChunkRow
 	for rows.Next() {
 		var item ExportChunkRow
+		var metadataRaw []byte
 		if err := rows.Scan(
 			&item.DocID,
 			&item.ChunkIndex,
@@ -1166,9 +1225,11 @@ func (r *Repository) ListExportChunks(ctx context.Context, sourceID *string, inc
 			&item.URL,
 			&item.PublishedAt,
 			&item.LanguageCode,
+			&metadataRaw,
 		); err != nil {
 			return nil, err
 		}
+		item.Metadata = decodeMap(metadataRaw)
 		out = append(out, item)
 	}
 	return out, rows.Err()
@@ -1237,6 +1298,237 @@ func (r *Repository) ListExportTrashRawMessages(ctx context.Context, sourceID *s
 		out = append(out, item)
 	}
 	return out, rows.Err()
+}
+
+func (r *Repository) ListSourcesByType(ctx context.Context, sourceType string) ([]models.Source, error) {
+	rows, err := r.pool.Query(ctx, `
+		select id, source_type, provider, external_id, telegram_channel_id, telegram_access_hash, username, title, url, status,
+		       last_message_id, last_synced_at, last_error, created_at, updated_at
+		from sources
+		where source_type = $1
+		order by created_at desc
+	`, sourceType)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]models.Source, 0)
+	for rows.Next() {
+		item, err := scanSource(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+func (r *Repository) UpdateSourceStatus(ctx context.Context, sourceID string, status string, lastError *string) error {
+	_, err := r.pool.Exec(ctx, `
+		update sources
+		set status = $2,
+		    last_error = $3,
+		    updated_at = now()
+		where id = $1
+	`, sourceID, status, lastError)
+	return err
+}
+
+func (r *Repository) UpdateSourceTitleIfEmpty(ctx context.Context, sourceID string, title string) error {
+	title = strings.TrimSpace(title)
+	if title == "" {
+		return nil
+	}
+
+	_, err := r.pool.Exec(ctx, `
+		update sources
+		set title = $2,
+		    updated_at = now()
+		where id = $1
+		  and (title is null or btrim(title) = '')
+	`, sourceID, title)
+	return err
+}
+
+func (r *Repository) CompleteJobDone(ctx context.Context, jobID string, result map[string]any) error {
+	resultJSON, err := marshalJSON(result)
+	if err != nil {
+		return err
+	}
+	_, err = r.pool.Exec(ctx, `
+		update jobs
+		set status = 'done',
+		    result_json = $2,
+		    finished_at = now()
+		where id = $1
+	`, jobID, resultJSON)
+	return err
+}
+
+type SaveYouTubeAudioArtifactInput struct {
+	SourceID      string
+	Provider      string
+	VideoID       string
+	AudioFilePath *string
+	AudioStatus   string
+	RawJSON       map[string]any
+	ErrorText     *string
+}
+
+func (r *Repository) SaveYouTubeAudioArtifact(ctx context.Context, input SaveYouTubeAudioArtifactInput) (models.YouTubeAudioArtifact, error) {
+	input.Provider = sanitizeUTF8String(input.Provider)
+	input.VideoID = sanitizeUTF8String(input.VideoID)
+	input.AudioFilePath = sanitizeNullableUTF8String(input.AudioFilePath)
+	input.AudioStatus = sanitizeUTF8String(input.AudioStatus)
+	input.ErrorText = sanitizeNullableUTF8String(input.ErrorText)
+
+	rawJSON, err := marshalJSON(input.RawJSON)
+	if err != nil {
+		return models.YouTubeAudioArtifact{}, err
+	}
+
+	var out models.YouTubeAudioArtifact
+	var rawJSONOut []byte
+	err = r.pool.QueryRow(ctx, `
+		insert into youtube_audio_artifacts (
+			source_id, provider, video_id, audio_file_path, audio_status, raw_json, error_text
+		)
+		values ($1, $2, $3, $4, $5, $6, $7)
+		on conflict (source_id) do update
+		set provider = excluded.provider,
+		    video_id = excluded.video_id,
+		    audio_file_path = excluded.audio_file_path,
+		    audio_status = excluded.audio_status,
+		    raw_json = excluded.raw_json,
+		    error_text = excluded.error_text,
+		    updated_at = now()
+		returning id, source_id, provider, video_id, audio_file_path, audio_status, raw_json,
+		          error_text, created_at, updated_at
+	`,
+		input.SourceID,
+		input.Provider,
+		input.VideoID,
+		input.AudioFilePath,
+		input.AudioStatus,
+		rawJSON,
+		input.ErrorText,
+	).Scan(
+		&out.ID,
+		&out.SourceID,
+		&out.Provider,
+		&out.VideoID,
+		&out.AudioFilePath,
+		&out.AudioStatus,
+		&rawJSONOut,
+		&out.ErrorText,
+		&out.CreatedAt,
+		&out.UpdatedAt,
+	)
+	if err != nil {
+		return models.YouTubeAudioArtifact{}, err
+	}
+	out.RawJSON = decodeMap(rawJSONOut)
+	return out, nil
+}
+
+func (r *Repository) GetYouTubeAudioArtifactBySource(ctx context.Context, sourceID string) (models.YouTubeAudioArtifact, error) {
+	var out models.YouTubeAudioArtifact
+	var rawJSON []byte
+	err := r.pool.QueryRow(ctx, `
+		select id, source_id, provider, video_id, audio_file_path, audio_status, raw_json,
+		       error_text, created_at, updated_at
+		from youtube_audio_artifacts
+		where source_id = $1
+		order by updated_at desc
+		limit 1
+	`, sourceID).Scan(
+		&out.ID,
+		&out.SourceID,
+		&out.Provider,
+		&out.VideoID,
+		&out.AudioFilePath,
+		&out.AudioStatus,
+		&rawJSON,
+		&out.ErrorText,
+		&out.CreatedAt,
+		&out.UpdatedAt,
+	)
+	if err != nil {
+		return models.YouTubeAudioArtifact{}, err
+	}
+	out.RawJSON = decodeMap(rawJSON)
+	return out, nil
+}
+
+func (r *Repository) ListChunksBySourceID(ctx context.Context, sourceID string, limit int) ([]models.Chunk, error) {
+	if limit <= 0 {
+		limit = 200
+	}
+	rows, err := r.pool.Query(ctx, `
+		select c.id, c.document_id, c.chunk_index, c.text, c.token_count, c.char_count, c.metadata,
+		       c.embedding_status, c.embedding_model, c.embedding_error, c.qdrant_point_id, c.created_at, c.updated_at
+		from chunks c
+		join documents d on d.id = c.document_id
+		where d.source_id = $1
+		order by d.created_at desc, c.chunk_index asc
+		limit $2
+	`, sourceID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]models.Chunk, 0, limit)
+	for rows.Next() {
+		var chunk models.Chunk
+		var metadataRaw []byte
+		if err := rows.Scan(
+			&chunk.ID,
+			&chunk.DocumentID,
+			&chunk.ChunkIndex,
+			&chunk.Text,
+			&chunk.TokenCount,
+			&chunk.CharCount,
+			&metadataRaw,
+			&chunk.EmbeddingStatus,
+			&chunk.EmbeddingModel,
+			&chunk.EmbeddingError,
+			&chunk.QdrantPointID,
+			&chunk.CreatedAt,
+			&chunk.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		chunk.Metadata = decodeMap(metadataRaw)
+		out = append(out, chunk)
+	}
+	return out, rows.Err()
+}
+
+func scanSource(row pgx.Row) (models.Source, error) {
+	var source models.Source
+	err := row.Scan(
+		&source.ID,
+		&source.SourceType,
+		&source.Provider,
+		&source.ExternalID,
+		&source.TelegramChannelID,
+		&source.TelegramAccessHash,
+		&source.Username,
+		&source.Title,
+		&source.URL,
+		&source.Status,
+		&source.LastMessageID,
+		&source.LastSyncedAt,
+		&source.LastError,
+		&source.CreatedAt,
+		&source.UpdatedAt,
+	)
+	if err != nil {
+		return models.Source{}, err
+	}
+	return source, nil
 }
 
 func scanRawMessage(rows pgx.Row) (models.RawMessage, error) {

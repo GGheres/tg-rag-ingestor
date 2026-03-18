@@ -199,6 +199,12 @@ pre.cleaned-preview {
   color: #fff;
 }
 
+.btn.danger {
+  border-color: #b91c1c;
+  background: #b91c1c;
+  color: #fff;
+}
+
 .btn:disabled {
   opacity: 0.65;
   cursor: not-allowed;
@@ -328,6 +334,33 @@ pre {
 
 .inline-actions {
   margin-top: 0.6rem;
+}
+
+.muted {
+  color: #475569;
+  font-size: 0.9rem;
+}
+
+.table-scroll {
+  overflow: auto;
+}
+
+.mono-cell {
+  font-family: "IBM Plex Mono", "SFMono-Regular", monospace;
+  word-break: break-word;
+}
+
+.plain-list {
+  margin: 0.5rem 0 0;
+  padding-left: 1rem;
+}
+
+.error-box {
+  margin: 0.8rem 0;
+  border: 1px solid #fecaca;
+  border-radius: 10px;
+  background: #fff1f2;
+  padding: 0.8rem;
 }
 
 .error {

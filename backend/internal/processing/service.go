@@ -90,7 +90,7 @@ func (s *Service) ProcessRawMessage(ctx context.Context, source models.Source, r
 
 	doc, err := s.repo.SaveDocument(ctx, storage.SaveDocumentInput{
 		SourceID:      source.ID,
-		RawMessageID:  raw.ID,
+		RawMessageID:  &raw.ID,
 		ExternalDocID: externalDocID,
 		Title:         source.Title,
 		TextClean:     normalized,
@@ -126,7 +126,7 @@ func (s *Service) ProcessRawMessage(ctx context.Context, source models.Source, r
 	}
 
 	chunks := chunking.SplitWithConfig(normalized, s.chunkCfg)
-	if err := s.repo.InsertChunks(ctx, doc.ID, source.ID, raw.ID, chunks); err != nil {
+	if err := s.repo.InsertChunks(ctx, doc.ID, source.ID, &raw.ID, chunks); err != nil {
 		return ProcessResult{}, err
 	}
 

@@ -1,19 +1,14 @@
 import { NavLink, Outlet } from "react-router-dom";
 
-const links = [
-  { to: "/sources", label: "Sources" },
-  { to: "/jobs", label: "Jobs" },
-  { to: "/preview", label: "Preview" },
-  { to: "/exports", label: "Exports" },
-];
+const links = [{ to: "/sources", label: "Sources" }];
 
 export default function Layout() {
   return (
     <div className="app-shell">
       <header className="topbar">
         <div className="topbar-title">
-          <h1>Telegram RAG Ingestor</h1>
-          <p>MVP admin panel for source sync, processing, and exports</p>
+          <h1>RAG Ingestor Admin</h1>
+          <p>Telegram parsing and YouTube audio extraction</p>
         </div>
         <nav className="topbar-nav">
           {links.map((link) => (

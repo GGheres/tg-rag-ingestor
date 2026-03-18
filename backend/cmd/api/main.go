@@ -24,7 +24,9 @@ func main() {
 	router := api.NewRouter(
 		application.Repository,
 		application.IngestionService,
+		application.YouTubeService,
 		application.ExportService,
+		application.FileScanService,
 		application.Logger,
 		cfg.CORSAllowedOrigin,
 	)

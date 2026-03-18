@@ -1,10 +1,12 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -17,22 +19,35 @@ import (
 	"tg-rag-ingestor/backend/internal/chunking"
 	"tg-rag-ingestor/backend/internal/cleaning"
 	"tg-rag-ingestor/backend/internal/export"
+	"tg-rag-ingestor/backend/internal/filescan"
 	"tg-rag-ingestor/backend/internal/ingestion"
+	"tg-rag-ingestor/backend/internal/naming"
 	"tg-rag-ingestor/backend/internal/storage"
 	"tg-rag-ingestor/backend/internal/telegram"
+	"tg-rag-ingestor/backend/internal/youtube"
 )
 
 type Handler struct {
 	repo             *storage.Repository
 	ingestionService *ingestion.Service
+	youtubeService   *youtube.Service
 	exportService    *export.Service
+	fileScanService  *filescan.Service
 }
 
-func NewHandler(repo *storage.Repository, ingestionService *ingestion.Service, exportService *export.Service) *Handler {
+func NewHandler(
+	repo *storage.Repository,
+	ingestionService *ingestion.Service,
+	youtubeService *youtube.Service,
+	exportService *export.Service,
+	fileScanService *filescan.Service,
+) *Handler {
 	return &Handler{
 		repo:             repo,
 		ingestionService: ingestionService,
+		youtubeService:   youtubeService,
 		exportService:    exportService,
+		fileScanService:  fileScanService,
 	}
 }
 
@@ -92,6 +107,141 @@ func (h *Handler) CreateSource(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, source)
 }
 
+func (h *Handler) ListYouTubeSources(w http.ResponseWriter, r *http.Request) {
+	items, err := h.youtubeService.ListYouTubeSources(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed_to_list_youtube_sources", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
+func (h *Handler) CreateYouTubeSource(w http.ResponseWriter, r *http.Request) {
+	type request struct {
+		URL   string  `json:"url"`
+		Title *string `json:"title"`
+	}
+	var req request
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_json", err.Error())
+		return
+	}
+
+	source, err := h.youtubeService.CreateYouTubeSource(r.Context(), youtube.CreateYouTubeSourceInput{
+		URL:   req.URL,
+		Title: req.Title,
+	})
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "failed_to_create_youtube_source", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, source)
+}
+
+func (h *Handler) GetYouTubeSource(w http.ResponseWriter, r *http.Request) {
+	sourceID := chi.URLParam(r, "id")
+	source, err := h.youtubeService.GetYouTubeSource(r.Context(), sourceID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "source_not_found", "source not found")
+			return
+		}
+		writeError(w, http.StatusBadRequest, "invalid_youtube_source", err.Error())
+		return
+	}
+
+	stats, err := h.repo.GetSourceStats(r.Context(), sourceID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed_to_get_source_stats", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"source": source,
+		"stats":  stats,
+	})
+}
+
+func (h *Handler) GetYouTubeSourceAudio(w http.ResponseWriter, r *http.Request) {
+	sourceID := chi.URLParam(r, "id")
+	result, err := h.youtubeService.GetSourceAudio(r.Context(), sourceID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "source_not_found", "source not found")
+			return
+		}
+		writeError(w, http.StatusBadRequest, "failed_to_get_youtube_audio", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (h *Handler) DownloadYouTubeAudio(w http.ResponseWriter, r *http.Request) {
+	sourceID := chi.URLParam(r, "id")
+	source, err := h.youtubeService.GetYouTubeSource(r.Context(), sourceID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "source_not_found", "source not found")
+			return
+		}
+		writeError(w, http.StatusBadRequest, "invalid_youtube_source", err.Error())
+		return
+	}
+	if strings.EqualFold(source.Status, "running") {
+		writeError(w, http.StatusConflict, "youtube_download_running", "audio download is already running for this source")
+		return
+	}
+
+	go func(sourceID string) {
+		if _, err := h.youtubeService.DownloadSourceAudio(context.Background(), sourceID); err != nil {
+			log.Printf("youtube audio download failed source_id=%s: %v", sourceID, err)
+		}
+	}(sourceID)
+
+	writeJSON(w, http.StatusAccepted, map[string]any{
+		"status":    "queued",
+		"source_id": sourceID,
+		"stage":     "download_audio",
+	})
+}
+
+func (h *Handler) TranscribeYouTubeAudio(w http.ResponseWriter, r *http.Request) {
+	sourceID := chi.URLParam(r, "id")
+	source, err := h.youtubeService.GetYouTubeSource(r.Context(), sourceID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "source_not_found", "source not found")
+			return
+		}
+		writeError(w, http.StatusBadRequest, "invalid_youtube_source", err.Error())
+		return
+	}
+	if strings.EqualFold(source.Status, "running") {
+		writeError(w, http.StatusConflict, "youtube_transcription_running", "another job is already running for this source")
+		return
+	}
+	audioDetails, err := h.youtubeService.GetSourceAudio(r.Context(), sourceID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "failed_to_get_youtube_audio", err.Error())
+		return
+	}
+	if audioDetails.Artifact == nil || audioDetails.Artifact.AudioFilePath == nil || strings.TrimSpace(*audioDetails.Artifact.AudioFilePath) == "" {
+		writeError(w, http.StatusConflict, "youtube_audio_not_downloaded", "download audio first, then run transcription")
+		return
+	}
+
+	go func(sourceID string) {
+		if _, err := h.youtubeService.TranscribeSourceAudio(context.Background(), sourceID); err != nil {
+			log.Printf("youtube transcription failed source_id=%s: %v", sourceID, err)
+		}
+	}(sourceID)
+
+	writeJSON(w, http.StatusAccepted, map[string]any{
+		"status":    "queued",
+		"source_id": sourceID,
+		"stage":     "transcribe_audio",
+	})
+}
+
 func (h *Handler) ImportJSONFile(w http.ResponseWriter, r *http.Request) {
 	const maxUploadBytes = int64(100 << 20) // 100MB
 
@@ -129,6 +279,31 @@ func (h *Handler) ImportJSONFile(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusCreated, result)
+}
+
+func (h *Handler) ScanFilesystemDirectory(w http.ResponseWriter, r *http.Request) {
+	if h.fileScanService == nil {
+		writeError(w, http.StatusServiceUnavailable, "filesystem_scan_unavailable", "filesystem scan service is not configured")
+		return
+	}
+
+	type request struct {
+		Path string `json:"path"`
+	}
+	var req request
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_json", err.Error())
+		return
+	}
+
+	result, err := h.fileScanService.ScanDirectory(r.Context(), filescan.ScanDirectoryInput{
+		Path: req.Path,
+	})
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "filesystem_scan_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (h *Handler) GetSource(w http.ResponseWriter, r *http.Request) {
@@ -267,6 +442,7 @@ func (h *Handler) DownloadDocument(w http.ResponseWriter, r *http.Request) {
 		handleNotFound(w, err, "document")
 		return
 	}
+	source, sourceErr := h.repo.GetSource(r.Context(), doc.SourceID)
 	chunks, err := h.repo.ListChunksByDocumentID(r.Context(), documentID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed_to_list_chunks", err.Error())
@@ -277,9 +453,12 @@ func (h *Handler) DownloadDocument(w http.ResponseWriter, r *http.Request) {
 	if format == "" {
 		format = "txt"
 	}
-	filename := sanitizeFilename(doc.ExternalDocID)
+	filename := naming.SanitizeFilename(doc.ExternalDocID)
+	if sourceErr == nil {
+		filename = naming.DocumentFilename(source, doc)
+	}
 	if filename == "" {
-		filename = "document_" + sanitizeFilename(documentID)
+		filename = "document_" + naming.SanitizeFilename(documentID)
 	}
 
 	switch format {
@@ -402,7 +581,7 @@ func (h *Handler) DownloadExport(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(item.ExportType, "txt_") {
 			extension = ".txt"
 		}
-		filename = "export_" + sanitizeFilename(item.ID) + extension
+		filename = "export_" + naming.SanitizeFilename(item.ID) + extension
 	}
 
 	contentType := "application/octet-stream"
@@ -484,21 +663,4 @@ func ptrIfNotEmpty(v string) *string {
 		return nil
 	}
 	return &v
-}
-
-func sanitizeFilename(raw string) string {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return ""
-	}
-
-	var builder strings.Builder
-	for _, r := range raw {
-		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' || r == '.' {
-			builder.WriteRune(r)
-			continue
-		}
-		builder.WriteRune('_')
-	}
-	return strings.Trim(builder.String(), "._")
 }

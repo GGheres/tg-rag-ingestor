@@ -8,14 +8,18 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 
 	"tg-rag-ingestor/backend/internal/export"
+	"tg-rag-ingestor/backend/internal/filescan"
 	"tg-rag-ingestor/backend/internal/ingestion"
 	"tg-rag-ingestor/backend/internal/storage"
+	"tg-rag-ingestor/backend/internal/youtube"
 )
 
 func NewRouter(
 	repo *storage.Repository,
 	ingestionService *ingestion.Service,
+	youtubeService *youtube.Service,
 	exportService *export.Service,
+	fileScanService *filescan.Service,
 	logger *slog.Logger,
 	allowedOrigin string,
 ) http.Handler {
@@ -24,7 +28,7 @@ func NewRouter(
 	r.Use(requestLogger(logger))
 	r.Use(corsMiddleware(allowedOrigin))
 
-	h := NewHandler(repo, ingestionService, exportService)
+	h := NewHandler(repo, ingestionService, youtubeService, exportService, fileScanService)
 
 	r.Get("/health", h.Health)
 
@@ -32,10 +36,17 @@ func NewRouter(
 		r.Get("/sources", h.ListSources)
 		r.Post("/sources", h.CreateSource)
 		r.Post("/imports/json", h.ImportJSONFile)
+		r.Post("/filesystem/scan", h.ScanFilesystemDirectory)
 		r.Get("/sources/{id}", h.GetSource)
 		r.Post("/sources/{id}/sync", h.SyncSource)
 		r.Get("/sources/{id}/raw-messages", h.ListRawMessages)
 		r.Get("/sources/{id}/documents", h.ListDocuments)
+		r.Get("/youtube/sources", h.ListYouTubeSources)
+		r.Post("/youtube/sources", h.CreateYouTubeSource)
+		r.Get("/youtube/sources/{id}", h.GetYouTubeSource)
+		r.Get("/youtube/sources/{id}/audio", h.GetYouTubeSourceAudio)
+		r.Post("/youtube/sources/{id}/download-audio", h.DownloadYouTubeAudio)
+		r.Post("/youtube/sources/{id}/transcribe-audio", h.TranscribeYouTubeAudio)
 		r.Post("/posts/parsed", h.ListParsedPosts)
 		r.Get("/documents/{id}", h.GetDocument)
 		r.Get("/documents/{id}/download", h.DownloadDocument)
