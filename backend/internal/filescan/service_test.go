@@ -6,9 +6,11 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -98,6 +100,62 @@ func TestScanDirectory_ExtractsNestedArchives(t *testing.T) {
 	}
 	if result.ArchivesProcessed != 2 {
 		t.Fatalf("ArchivesProcessed = %d, want 2", result.ArchivesProcessed)
+	}
+}
+
+func TestScanDirectory_MissingDirectoryReturnsClearError(t *testing.T) {
+	t.Parallel()
+
+	extractDir := filepath.Join(t.TempDir(), "extracts")
+	service, err := NewService(Config{ExtractDir: extractDir, MaxFiles: 100, MaxArchiveDepth: 4})
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+
+	_, err = service.ScanDirectory(context.Background(), ScanDirectoryInput{
+		Path: filepath.Join(t.TempDir(), "missing"),
+	})
+	if err == nil {
+		t.Fatal("ScanDirectory() error = nil, want non-nil")
+	}
+	if !strings.Contains(err.Error(), "directory does not exist") {
+		t.Fatalf("ScanDirectory() error = %q, want to contain %q", err.Error(), "directory does not exist")
+	}
+}
+
+func TestScanDirectory_AcceptsFileURIPaths(t *testing.T) {
+	t.Parallel()
+
+	baseDir := t.TempDir()
+	rootDir := filepath.Join(baseDir, "dir with space")
+	extractDir := filepath.Join(t.TempDir(), "extracts")
+	mustWriteFile(t, filepath.Join(rootDir, "a.txt"), "hello")
+
+	service, err := NewService(Config{ExtractDir: extractDir, MaxFiles: 100, MaxArchiveDepth: 4})
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+
+	fileURL := (&url.URL{
+		Scheme: "file",
+		Path:   rootDir,
+	}).String()
+	inputs := []string{
+		"file:" + rootDir,
+		fileURL,
+	}
+
+	for _, inputPath := range inputs {
+		result, scanErr := service.ScanDirectory(context.Background(), ScanDirectoryInput{Path: inputPath})
+		if scanErr != nil {
+			t.Fatalf("ScanDirectory(%q) error = %v", inputPath, scanErr)
+		}
+		if result.RootPath != rootDir {
+			t.Fatalf("ScanDirectory(%q) RootPath = %q, want %q", inputPath, result.RootPath, rootDir)
+		}
+		if len(result.Files) != 1 {
+			t.Fatalf("ScanDirectory(%q) files = %d, want 1", inputPath, len(result.Files))
+		}
 	}
 }
 

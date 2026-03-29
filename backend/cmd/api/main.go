@@ -27,6 +27,7 @@ func main() {
 		application.YouTubeService,
 		application.ExportService,
 		application.FileScanService,
+		application.HHConfig,
 		application.Logger,
 		cfg.CORSAllowedOrigin,
 	)

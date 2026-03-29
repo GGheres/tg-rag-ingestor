@@ -1,6 +1,9 @@
 import { NavLink, Outlet } from "react-router-dom";
 
-const links = [{ to: "/sources", label: "Sources" }];
+const links = [
+  { to: "/sources", label: "Sources" },
+  { to: "/hh-resumes", label: "HH Resumes" },
+];
 
 export default function Layout() {
   return (
@@ -8,7 +11,7 @@ export default function Layout() {
       <header className="topbar">
         <div className="topbar-title">
           <h1>RAG Ingestor Admin</h1>
-          <p>Telegram parsing and YouTube audio extraction</p>
+          <p>Telegram, YouTube and HeadHunter ingestion</p>
         </div>
         <nav className="topbar-nav">
           {links.map((link) => (

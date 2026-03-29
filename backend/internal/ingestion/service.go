@@ -71,8 +71,14 @@ func (s *Service) SyncSource(ctx context.Context, sourceID string, options SyncO
 	if err != nil {
 		return SyncResult{}, err
 	}
-	if source.SourceType != "telegram_public_channel" {
-		return SyncResult{}, fmt.Errorf("sync is supported only for telegram_public_channel sources")
+	if source.SourceType != "telegram_public_channel" &&
+		source.SourceType != telegram.MessageLinkSourceType &&
+		source.SourceType != telegram.ChannelDocumentSourceType {
+		return SyncResult{}, fmt.Errorf(
+			"sync is supported only for telegram_public_channel, %s and %s sources",
+			telegram.MessageLinkSourceType,
+			telegram.ChannelDocumentSourceType,
+		)
 	}
 
 	batchSize := options.BatchSize
@@ -104,7 +110,17 @@ func (s *Service) SyncSource(ctx context.Context, sourceID string, options SyncO
 		return SyncResult{}, err
 	}
 
-	result, syncErr := s.syncSourceWithJob(ctx, source, job.ID, batchSize, maxMessages, options.FullResync)
+	var (
+		result  syncCounters
+		syncErr error
+	)
+	if source.SourceType == telegram.MessageLinkSourceType {
+		result, syncErr = s.syncMessageLinkSourceWithJob(ctx, source, job.ID)
+	} else if source.SourceType == telegram.ChannelDocumentSourceType {
+		result, syncErr = s.syncChannelDocumentSourceWithJob(ctx, source, job.ID, batchSize, maxMessages)
+	} else {
+		result, syncErr = s.syncSourceWithJob(ctx, source, job.ID, batchSize, maxMessages, options.FullResync)
+	}
 	if syncErr != nil {
 		_ = s.repo.FailJob(ctx, job.ID, syncErr.Error(), map[string]any{
 			"error": syncErr.Error(),

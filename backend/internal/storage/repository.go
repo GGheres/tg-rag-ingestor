@@ -35,6 +35,15 @@ type CreateSourceInput struct {
 	URL        string
 }
 
+type CreateTelegramMessageLinkInput struct {
+	LinkOrder         int
+	OriginalURL       string
+	CanonicalURL      string
+	TelegramChannelID *int64
+	Username          *string
+	TelegramMessageID int64
+}
+
 func (r *Repository) CreateSource(ctx context.Context, input CreateSourceInput) (models.Source, error) {
 	var source models.Source
 	err := r.pool.QueryRow(ctx, `
@@ -62,6 +71,93 @@ func (r *Repository) CreateSource(ctx context.Context, input CreateSourceInput) 
 	return source, err
 }
 
+func (r *Repository) CreateTelegramMessageLinkSource(
+	ctx context.Context,
+	sourceInput CreateSourceInput,
+	links []CreateTelegramMessageLinkInput,
+) (models.Source, error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return models.Source{}, err
+	}
+	defer func() {
+		_ = tx.Rollback(ctx)
+	}()
+
+	var source models.Source
+	err = tx.QueryRow(ctx, `
+		insert into sources (source_type, provider, external_id, username, title, url, status)
+		values ($1, $2, $3, $4, $5, $6, 'active')
+		returning id, source_type, provider, external_id, telegram_channel_id, telegram_access_hash, username, title, url, status,
+		          last_message_id, last_synced_at, last_error, created_at, updated_at
+	`, sourceInput.SourceType, sourceInput.Provider, sourceInput.ExternalID, sourceInput.Username, sourceInput.Title, sourceInput.URL).Scan(
+		&source.ID,
+		&source.SourceType,
+		&source.Provider,
+		&source.ExternalID,
+		&source.TelegramChannelID,
+		&source.TelegramAccessHash,
+		&source.Username,
+		&source.Title,
+		&source.URL,
+		&source.Status,
+		&source.LastMessageID,
+		&source.LastSyncedAt,
+		&source.LastError,
+		&source.CreatedAt,
+		&source.UpdatedAt,
+	)
+	if err != nil {
+		return models.Source{}, err
+	}
+
+	for _, link := range links {
+		if _, err := tx.Exec(ctx, `
+			insert into telegram_message_links (
+				source_id, link_order, original_url, canonical_url, telegram_channel_id, username, telegram_message_id
+			)
+			values ($1, $2, $3, $4, $5, $6, $7)
+		`, source.ID, link.LinkOrder, link.OriginalURL, link.CanonicalURL, link.TelegramChannelID, link.Username, link.TelegramMessageID); err != nil {
+			return models.Source{}, err
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return models.Source{}, err
+	}
+	return source, nil
+}
+
+func (r *Repository) ReplaceTelegramMessageLinksBySource(
+	ctx context.Context,
+	sourceID string,
+	links []CreateTelegramMessageLinkInput,
+) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = tx.Rollback(ctx)
+	}()
+
+	if _, err := tx.Exec(ctx, `delete from telegram_message_links where source_id = $1`, sourceID); err != nil {
+		return err
+	}
+	for _, link := range links {
+		if _, err := tx.Exec(ctx, `
+			insert into telegram_message_links (
+				source_id, link_order, original_url, canonical_url, telegram_channel_id, username, telegram_message_id
+			)
+			values ($1, $2, $3, $4, $5, $6, $7)
+		`, sourceID, link.LinkOrder, link.OriginalURL, link.CanonicalURL, link.TelegramChannelID, link.Username, link.TelegramMessageID); err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit(ctx)
+}
+
 func (r *Repository) ListSources(ctx context.Context) ([]models.Source, error) {
 	rows, err := r.pool.Query(ctx, `
 		select id, source_type, provider, external_id, telegram_channel_id, telegram_access_hash, username, title, url, status,
@@ -74,7 +170,7 @@ func (r *Repository) ListSources(ctx context.Context) ([]models.Source, error) {
 	}
 	defer rows.Close()
 
-	var out []models.Source
+	out := make([]models.Source, 0)
 	for rows.Next() {
 		var source models.Source
 		if err := rows.Scan(
@@ -100,6 +196,41 @@ func (r *Repository) ListSources(ctx context.Context) ([]models.Source, error) {
 	}
 
 	return out, rows.Err()
+}
+
+func (r *Repository) DeleteAllSources(ctx context.Context) (int64, error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer func() {
+		_ = tx.Rollback(ctx)
+	}()
+
+	var deletedCount int64
+	if err := tx.QueryRow(ctx, `select count(*) from sources`).Scan(&deletedCount); err != nil {
+		return 0, err
+	}
+
+	if _, err := tx.Exec(ctx, `
+		truncate table
+			telegram_message_links,
+			youtube_audio_artifacts,
+			chunks,
+			documents,
+			raw_messages,
+			exports,
+			jobs,
+			sources
+		restart identity cascade
+	`); err != nil {
+		return 0, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return 0, err
+	}
+	return deletedCount, nil
 }
 
 func (r *Repository) GetSource(ctx context.Context, sourceID string) (models.Source, error) {
@@ -370,6 +501,39 @@ func (r *Repository) ListRawMessagesBySource(ctx context.Context, sourceID strin
 	return out, rows.Err()
 }
 
+func (r *Repository) ListTelegramMessageLinksBySource(ctx context.Context, sourceID string) ([]models.TelegramMessageLink, error) {
+	rows, err := r.pool.Query(ctx, `
+		select id, source_id, link_order, original_url, canonical_url, telegram_channel_id, username, telegram_message_id, created_at
+		from telegram_message_links
+		where source_id = $1
+		order by link_order asc, created_at asc
+	`, sourceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]models.TelegramMessageLink, 0)
+	for rows.Next() {
+		var item models.TelegramMessageLink
+		if err := rows.Scan(
+			&item.ID,
+			&item.SourceID,
+			&item.LinkOrder,
+			&item.OriginalURL,
+			&item.CanonicalURL,
+			&item.TelegramChannelID,
+			&item.Username,
+			&item.TelegramMessageID,
+			&item.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
 func (r *Repository) FindCanonicalDocumentByHash(ctx context.Context, sourceID, contentHash, externalDocID string) (*models.Document, error) {
 	var doc models.Document
 	var tagsRaw []byte
@@ -574,6 +738,11 @@ func (r *Repository) SaveDocument(ctx context.Context, input SaveDocumentInput) 
 
 func (r *Repository) DeleteChunksByDocumentID(ctx context.Context, documentID string) error {
 	_, err := r.pool.Exec(ctx, `delete from chunks where document_id = $1`, documentID)
+	return err
+}
+
+func (r *Repository) DeleteDocumentByExternalDocID(ctx context.Context, externalDocID string) error {
+	_, err := r.pool.Exec(ctx, `delete from documents where external_doc_id = $1`, externalDocID)
 	return err
 }
 

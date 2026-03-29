@@ -1,8 +1,12 @@
 import { FormEvent, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import {
+  clearSourcesHistory,
+  createFilesystemRAGExport,
   createFullSourceTXTExport,
+  createTelegramChannelDocumentSource,
   createSource,
+  createTelegramMessageLinkSource,
   createYouTubeSource,
   downloadYouTubeAudioSource,
   exportDownloadURL,
@@ -12,7 +16,7 @@ import {
   syncSource,
 } from "../api/client";
 import StatusBadge from "../components/StatusBadge";
-import type { FilesystemScanResult, Source } from "../types";
+import type { FilesystemRAGExportResult, FilesystemScanResult, Source } from "../types";
 
 function formatBytes(sizeBytes: number): string {
   if (!Number.isFinite(sizeBytes) || sizeBytes < 1024) {
@@ -27,6 +31,13 @@ function formatBytes(sizeBytes: number): string {
   return `${(sizeBytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 }
 
+function displaySourceURL(source: Source): string {
+  if (source.source_type === "telegram_channel_document" && source.external_id) {
+    return source.external_id;
+  }
+  return source.url;
+}
+
 export default function SourcesPage() {
   const [sources, setSources] = useState<Source[]>([]);
   const [loading, setLoading] = useState(true);
@@ -36,15 +47,22 @@ export default function SourcesPage() {
   const [exportingID, setExportingID] = useState<string | null>(null);
 
   const [telegramForm, setTelegramForm] = useState({ url: "", username: "" });
+  const [telegramChannelDocumentForm, setTelegramChannelDocumentForm] = useState({ title: "", url: "" });
+  const [telegramLinksForm, setTelegramLinksForm] = useState({ title: "", messageLinks: "" });
   const [youtubeForm, setYouTubeForm] = useState({ url: "" });
   const [filesystemForm, setFilesystemForm] = useState({ path: "" });
   const [jsonImportFile, setJsonImportFile] = useState<File | null>(null);
 
   const [creatingTelegram, setCreatingTelegram] = useState(false);
+  const [creatingTelegramChannelDocument, setCreatingTelegramChannelDocument] = useState(false);
+  const [creatingTelegramLinks, setCreatingTelegramLinks] = useState(false);
   const [creatingJSONImport, setCreatingJSONImport] = useState(false);
   const [creatingYouTube, setCreatingYouTube] = useState(false);
   const [scanningFilesystem, setScanningFilesystem] = useState(false);
+  const [exportingFilesystemRAG, setExportingFilesystemRAG] = useState(false);
+  const [clearingHistory, setClearingHistory] = useState(false);
   const [filesystemScan, setFilesystemScan] = useState<FilesystemScanResult | null>(null);
+  const [lastFilesystemRAGExport, setLastFilesystemRAGExport] = useState<FilesystemRAGExportResult | null>(null);
   const [lastJSONImport, setLastJSONImport] = useState<{
     sourceID: string;
     importedCount: number;
@@ -62,7 +80,7 @@ export default function SourcesPage() {
         setLoading(true);
       }
       const data = await getSources();
-      setSources(data);
+      setSources(Array.isArray(data) ? data : []);
       setError(null);
     } catch (err) {
       setError((err as Error).message);
@@ -121,6 +139,56 @@ export default function SourcesPage() {
     }
   }
 
+  async function onTelegramLinksSubmit(event: FormEvent) {
+    event.preventDefault();
+    const messageLinks = telegramLinksForm.messageLinks
+      .split(/\r?\n/)
+      .map((item) => item.trim())
+      .filter(Boolean);
+    if (messageLinks.length === 0) {
+      setError("Add at least one Telegram message link.");
+      return;
+    }
+
+    try {
+      setCreatingTelegramLinks(true);
+      await createTelegramMessageLinkSource({
+        title: telegramLinksForm.title || undefined,
+        message_links: messageLinks,
+      });
+      setTelegramLinksForm({ title: "", messageLinks: "" });
+      setError(null);
+      await loadSources();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setCreatingTelegramLinks(false);
+    }
+  }
+
+  async function onTelegramChannelDocumentSubmit(event: FormEvent) {
+    event.preventDefault();
+    if (!telegramChannelDocumentForm.url.trim()) {
+      setError("Add a Telegram channel URL.");
+      return;
+    }
+
+    try {
+      setCreatingTelegramChannelDocument(true);
+      await createTelegramChannelDocumentSource({
+        title: telegramChannelDocumentForm.title || undefined,
+        url: telegramChannelDocumentForm.url.trim(),
+      });
+      setTelegramChannelDocumentForm({ title: "", url: "" });
+      setError(null);
+      await loadSources();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setCreatingTelegramChannelDocument(false);
+    }
+  }
+
   async function onFilesystemSubmit(event: FormEvent) {
     event.preventDefault();
     try {
@@ -129,11 +197,35 @@ export default function SourcesPage() {
         path: filesystemForm.path,
       });
       setFilesystemScan(result);
+      setLastFilesystemRAGExport(null);
       setError(null);
     } catch (err) {
       setError((err as Error).message);
     } finally {
       setScanningFilesystem(false);
+    }
+  }
+
+  async function onFilesystemExportRAG() {
+    const path = filesystemForm.path.trim() || filesystemScan?.root_path?.trim() || "";
+    if (!path) {
+      setError("Run filesystem scan first or provide a folder path.");
+      return;
+    }
+
+    try {
+      setExportingFilesystemRAG(true);
+      const result = await createFilesystemRAGExport({
+        path,
+        include_skipped: true,
+      });
+      setLastFilesystemRAGExport(result);
+      setError(null);
+      window.open(exportDownloadURL(result.export_id), "_blank", "noopener,noreferrer");
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setExportingFilesystemRAG(false);
     }
   }
 
@@ -207,6 +299,24 @@ export default function SourcesPage() {
     }
   }
 
+  async function onClearHistory() {
+    if (!window.confirm("Clear source history? This will delete all saved sources and their parsed data.")) {
+      return;
+    }
+
+    try {
+      setClearingHistory(true);
+      await clearSourcesHistory();
+      setLastJSONImport(null);
+      setError(null);
+      await loadSources();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setClearingHistory(false);
+    }
+  }
+
   return (
     <section>
       <div className="card">
@@ -256,6 +366,70 @@ export default function SourcesPage() {
       </div>
 
       <div className="card">
+        <h2>Add Telegram Channel As One RAG Document</h2>
+        <form className="grid-form" onSubmit={onTelegramChannelDocumentSubmit}>
+          <label>
+            Title
+            <input
+              type="text"
+              placeholder="Closed channel full document"
+              value={telegramChannelDocumentForm.title}
+              onChange={(e) => setTelegramChannelDocumentForm((prev) => ({ ...prev, title: e.target.value }))}
+            />
+          </label>
+          <label>
+            Channel URL
+            <input
+              type="text"
+              placeholder="https://t.me/+inviteHash or https://t.me/channelname"
+              value={telegramChannelDocumentForm.url}
+              onChange={(e) => setTelegramChannelDocumentForm((prev) => ({ ...prev, url: e.target.value }))}
+              required
+            />
+          </label>
+          <button className="btn primary" type="submit" disabled={creatingTelegramChannelDocument}>
+            {creatingTelegramChannelDocument ? "Creating..." : "Add Telegram channel document"}
+          </button>
+        </form>
+        <p className="muted">
+          This mode pulls the channel history, auto-generates per-message links, and then merges cleaned message text
+          into one RAG document. For private channels, use the same MTProto account that already has access.
+        </p>
+      </div>
+
+      <div className="card">
+        <h2>Add Telegram Source By Message Links</h2>
+        <form className="grid-form" onSubmit={onTelegramLinksSubmit}>
+          <label>
+            Title
+            <input
+              type="text"
+              placeholder="Closed channel selection"
+              value={telegramLinksForm.title}
+              onChange={(e) => setTelegramLinksForm((prev) => ({ ...prev, title: e.target.value }))}
+            />
+          </label>
+          <label>
+            Message links
+            <textarea
+              placeholder={"https://t.me/c/1941234567/10\nhttps://t.me/c/1941234567/11"}
+              value={telegramLinksForm.messageLinks}
+              onChange={(e) => setTelegramLinksForm((prev) => ({ ...prev, messageLinks: e.target.value }))}
+              rows={5}
+              required
+            />
+          </label>
+          <button className="btn primary" type="submit" disabled={creatingTelegramLinks}>
+            {creatingTelegramLinks ? "Creating..." : "Add Telegram message-link source"}
+          </button>
+        </form>
+        <p className="muted">
+          Use one Telegram post link per line. All links must belong to the same channel. Private channel links in the{" "}
+          <code>t.me/c/...</code> format require an authorized MTProto session.
+        </p>
+      </div>
+
+      <div className="card">
         <h2>Scan Local Folder</h2>
         <form className="grid-form" onSubmit={onFilesystemSubmit}>
           <label>
@@ -302,6 +476,22 @@ export default function SourcesPage() {
             <p className="muted">
               Supported: <code>{filesystemScan.supported_archive_extensions.join(", ")}</code>
             </p>
+            <div className="inline-actions">
+              <button className="btn" onClick={() => void onFilesystemExportRAG()} disabled={exportingFilesystemRAG}>
+                {exportingFilesystemRAG ? "Preparing TXT..." : "Export filesystem to TXT RAG"}
+              </button>
+              {lastFilesystemRAGExport ? (
+                <a className="btn link" href={exportDownloadURL(lastFilesystemRAGExport.export_id)}>
+                  Download latest TXT RAG
+                </a>
+              ) : null}
+            </div>
+            {lastFilesystemRAGExport ? (
+              <p className="muted">
+                Exported {lastFilesystemRAGExport.exported_files} of {lastFilesystemRAGExport.scanned_files} files;
+                skipped {lastFilesystemRAGExport.skipped_files}; written documents {lastFilesystemRAGExport.row_count}.
+              </p>
+            ) : null}
             {filesystemScan.skipped_archives.length > 0 ? (
               <div className="error-box">
                 <strong>Skipped archives</strong>
@@ -371,9 +561,14 @@ export default function SourcesPage() {
       <div className="card">
         <div className="card-header">
           <h2>Sources</h2>
-          <button className="btn" onClick={() => void loadSources()} disabled={loading}>
-            Refresh
-          </button>
+          <div className="inline-actions">
+            <button className="btn" onClick={() => void loadSources()} disabled={loading || clearingHistory}>
+              Refresh
+            </button>
+            <button className="btn" onClick={() => void onClearHistory()} disabled={loading || clearingHistory}>
+              {clearingHistory ? "Clearing..." : "Clear history"}
+            </button>
+          </div>
         </div>
 
         {error && <p className="error">{error}</p>}
@@ -394,27 +589,35 @@ export default function SourcesPage() {
             <tbody>
               {sources.map((source) => {
                 const isTelegramSource = source.source_type === "telegram_public_channel";
+                const isTelegramChannelDocumentSource = source.source_type === "telegram_channel_document";
+                const isTelegramLinkSource = source.source_type === "telegram_message_links";
                 const isYouTubeSource = source.source_type === "youtube_video";
                 const isJSONUploadSource = source.source_type === "json_upload";
 
                 return (
                   <tr key={source.id}>
-                    <td>
-                      <div className="cell-title">
-                        <Link to={`/sources/${source.id}`}>{source.title || source.username || source.url}</Link>
-                        <small>{source.url}</small>
-                      </div>
-                    </td>
+                      <td>
+                        <div className="cell-title">
+                          <Link to={`/sources/${source.id}`}>{source.title || source.username || source.url}</Link>
+                          <small>{displaySourceURL(source)}</small>
+                        </div>
+                      </td>
                     <td>
                       <StatusBadge status={source.status} />
                     </td>
                     <td>{source.source_type}</td>
                     <td>{source.provider || "-"}</td>
                     <td>
-                      {isTelegramSource ? (
+                      {isTelegramSource || isTelegramLinkSource || isTelegramChannelDocumentSource ? (
                         <>
                           <button className="btn" onClick={() => void onSync(source.id)} disabled={syncingID === source.id}>
-                            {syncingID === source.id ? "Syncing..." : "Sync full history"}
+                            {syncingID === source.id
+                              ? "Syncing..."
+                              : isTelegramLinkSource
+                                ? "Fetch message links"
+                                : isTelegramChannelDocumentSource
+                                  ? "Build channel document"
+                                : "Sync full history"}
                           </button>
                           <button
                             className="btn"

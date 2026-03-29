@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -21,6 +22,7 @@ import (
 	"tg-rag-ingestor/backend/internal/export"
 	"tg-rag-ingestor/backend/internal/filescan"
 	"tg-rag-ingestor/backend/internal/ingestion"
+	"tg-rag-ingestor/backend/internal/model"
 	"tg-rag-ingestor/backend/internal/naming"
 	"tg-rag-ingestor/backend/internal/storage"
 	"tg-rag-ingestor/backend/internal/telegram"
@@ -33,6 +35,8 @@ type Handler struct {
 	youtubeService   *youtube.Service
 	exportService    *export.Service
 	fileScanService  *filescan.Service
+	hhConfig         model.HHConfig
+	logger           *slog.Logger
 }
 
 func NewHandler(
@@ -41,6 +45,8 @@ func NewHandler(
 	youtubeService *youtube.Service,
 	exportService *export.Service,
 	fileScanService *filescan.Service,
+	hhConfig model.HHConfig,
+	logger *slog.Logger,
 ) *Handler {
 	return &Handler{
 		repo:             repo,
@@ -48,6 +54,8 @@ func NewHandler(
 		youtubeService:   youtubeService,
 		exportService:    exportService,
 		fileScanService:  fileScanService,
+		hhConfig:         hhConfig,
+		logger:           logger,
 	}
 }
 
@@ -70,6 +78,17 @@ func (h *Handler) ListSources(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, items)
+}
+
+func (h *Handler) DeleteAllSources(w http.ResponseWriter, r *http.Request) {
+	deletedCount, err := h.repo.DeleteAllSources(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed_to_clear_sources_history", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"deleted_count": deletedCount,
+	})
 }
 
 func (h *Handler) CreateSource(w http.ResponseWriter, r *http.Request) {
@@ -102,6 +121,50 @@ func (h *Handler) CreateSource(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "failed_to_create_source", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, source)
+}
+
+func (h *Handler) CreateTelegramMessageLinkSource(w http.ResponseWriter, r *http.Request) {
+	type request struct {
+		Title        *string  `json:"title"`
+		MessageLinks []string `json:"message_links"`
+	}
+	var req request
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_json", err.Error())
+		return
+	}
+
+	source, err := h.ingestionService.CreateTelegramMessageLinkSource(r.Context(), ingestion.CreateTelegramMessageLinkSourceInput{
+		Title:        req.Title,
+		MessageLinks: req.MessageLinks,
+	})
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "failed_to_create_telegram_message_link_source", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, source)
+}
+
+func (h *Handler) CreateTelegramChannelDocumentSource(w http.ResponseWriter, r *http.Request) {
+	type request struct {
+		Title *string `json:"title"`
+		URL   string  `json:"url"`
+	}
+	var req request
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_json", err.Error())
+		return
+	}
+
+	source, err := h.ingestionService.CreateTelegramChannelDocumentSource(r.Context(), ingestion.CreateTelegramChannelDocumentSourceInput{
+		Title: req.Title,
+		URL:   req.URL,
+	})
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "failed_to_create_telegram_channel_document_source", err.Error())
 		return
 	}
 	writeJSON(w, http.StatusCreated, source)
@@ -306,6 +369,50 @@ func (h *Handler) ScanFilesystemDirectory(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, result)
 }
 
+func (h *Handler) ExportFilesystemRAG(w http.ResponseWriter, r *http.Request) {
+	if h.fileScanService == nil {
+		writeError(w, http.StatusServiceUnavailable, "filesystem_scan_unavailable", "filesystem scan service is not configured")
+		return
+	}
+	if h.exportService == nil {
+		writeError(w, http.StatusServiceUnavailable, "filesystem_rag_export_unavailable", "export service is not configured")
+		return
+	}
+
+	type request struct {
+		Path           string `json:"path"`
+		IncludeSkipped *bool  `json:"include_skipped"`
+	}
+	var req request
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_json", err.Error())
+		return
+	}
+
+	scanResult, err := h.fileScanService.ScanDirectory(r.Context(), filescan.ScanDirectoryInput{
+		Path: req.Path,
+	})
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "filesystem_scan_failed", err.Error())
+		return
+	}
+
+	includeSkipped := true
+	if req.IncludeSkipped != nil {
+		includeSkipped = *req.IncludeSkipped
+	}
+
+	result, err := h.exportService.ExportFilesystemRAG(r.Context(), export.FilesystemRAGRequest{
+		ScanResult:     scanResult,
+		IncludeSkipped: includeSkipped,
+	})
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "filesystem_rag_export_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, result)
+}
+
 func (h *Handler) GetSource(w http.ResponseWriter, r *http.Request) {
 	sourceID := chi.URLParam(r, "id")
 	source, err := h.repo.GetSource(r.Context(), sourceID)
@@ -359,6 +466,16 @@ func (h *Handler) ListRawMessages(w http.ResponseWriter, r *http.Request) {
 	items, err := h.repo.ListRawMessagesBySource(r.Context(), sourceID, limit)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed_to_list_raw_messages", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
+func (h *Handler) ListTelegramMessageLinks(w http.ResponseWriter, r *http.Request) {
+	sourceID := chi.URLParam(r, "id")
+	items, err := h.repo.ListTelegramMessageLinksBySource(r.Context(), sourceID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed_to_list_telegram_message_links", err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, items)

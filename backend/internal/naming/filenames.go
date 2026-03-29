@@ -42,6 +42,14 @@ func DocumentFilename(source models.Source, doc models.Document) string {
 			}
 			return fmt.Sprintf("%s_%d", base, messageID)
 		}
+	case "telegram_message_links":
+		if base != "" {
+			return base
+		}
+	case "telegram_channel_document":
+		if base != "" {
+			return base
+		}
 	case "youtube_video":
 		if videoID := SanitizeFilename(stringFromAny(doc.Metadata["video_id"])); videoID != "" {
 			if base == "" || base == videoID {

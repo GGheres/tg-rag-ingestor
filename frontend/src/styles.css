@@ -350,6 +350,10 @@ pre {
   word-break: break-word;
 }
 
+tr.row-selected {
+  background: #eff6ff;
+}
+
 .plain-list {
   margin: 0.5rem 0 0;
   padding-left: 1rem;

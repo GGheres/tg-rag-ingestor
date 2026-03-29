@@ -14,6 +14,8 @@ import (
 	"github.com/gotd/td/session"
 	td "github.com/gotd/td/telegram"
 	tdauth "github.com/gotd/td/telegram/auth"
+	"github.com/gotd/td/telegram/query"
+	querydialogs "github.com/gotd/td/telegram/query/dialogs"
 	"github.com/gotd/td/tg"
 	"golang.org/x/term"
 )
@@ -39,14 +41,43 @@ func NewMTProtoCollector(apiID, apiHash, phone, sessionFile, password, authCode 
 }
 
 func (c *MTProtoCollector) ResolveChannel(ctx context.Context, input ResolveInput) (ChannelRef, error) {
-	username, sourceURL, err := ResolveUsername(input)
+	channelLink, err := ParseChannelLink(input)
 	if err != nil {
 		return ChannelRef{}, err
 	}
 
 	var out ChannelRef
 	err = c.withAPI(ctx, func(ctx context.Context, api *tg.Client) error {
-		resolved, err := c.resolveChannelByUsername(ctx, api, username, sourceURL)
+		var resolved ChannelRef
+		var err error
+		switch {
+		case channelLink.Username != "":
+			resolved, err = c.resolveChannelByUsername(ctx, api, channelLink.Username, channelLink.NormalizedURL)
+		case channelLink.InviteHash != "":
+			resolved, err = c.resolveChannelByInviteHash(ctx, api, channelLink.InviteHash, channelLink.NormalizedURL)
+		default:
+			err = errors.New("unsupported telegram channel input")
+		}
+		if err != nil {
+			return err
+		}
+		out = resolved
+		return nil
+	})
+	if err != nil {
+		return ChannelRef{}, err
+	}
+	return out, nil
+}
+
+func (c *MTProtoCollector) ResolveChannelByID(ctx context.Context, channelID int64) (ChannelRef, error) {
+	if channelID <= 0 {
+		return ChannelRef{}, errors.New("channel id must be > 0")
+	}
+
+	var out ChannelRef
+	err := c.withAPI(ctx, func(ctx context.Context, api *tg.Client) error {
+		resolved, err := c.resolveChannelByID(ctx, api, channelID)
 		if err != nil {
 			return err
 		}
@@ -151,6 +182,79 @@ func (c *MTProtoCollector) FetchChannelHistory(ctx context.Context, channel Chan
 	}
 
 	return page, nil
+}
+
+func (c *MTProtoCollector) FetchMessages(ctx context.Context, channel ChannelRef, messageIDs []int64) ([]Message, error) {
+	ids := sanitizeMessageIDs(messageIDs)
+	if len(ids) == 0 {
+		return []Message{}, nil
+	}
+
+	var out []Message
+	err := c.withAPI(ctx, func(ctx context.Context, api *tg.Client) error {
+		inputPeer, _, err := c.resolveInputPeer(ctx, api, channel)
+		if err != nil {
+			return err
+		}
+
+		inputIDs := make([]tg.InputMessageClass, 0, len(ids))
+		for _, messageID := range ids {
+			inputIDs = append(inputIDs, &tg.InputMessageID{ID: clampTLInt(messageID)})
+		}
+
+		res, err := api.ChannelsGetMessages(ctx, &tg.ChannelsGetMessagesRequest{
+			Channel: &tg.InputChannel{
+				ChannelID:  inputPeer.ChannelID,
+				AccessHash: inputPeer.AccessHash,
+			},
+			ID: inputIDs,
+		})
+		if err != nil {
+			return fmt.Errorf("channels.getMessages: %w", err)
+		}
+
+		modified, ok := res.AsModified()
+		if !ok {
+			return errors.New("channels.getMessages returned an unmodified response")
+		}
+
+		classes := modified.GetMessages()
+		byID := make(map[int64]Message, len(classes))
+		missing := make([]string, 0)
+
+		for _, class := range classes {
+			switch msg := class.(type) {
+			case *tg.Message:
+				byID[int64(msg.GetID())] = mapTGMessage(msg)
+			case *tg.MessageService:
+				byID[int64(msg.GetID())] = mapTGServiceMessage(msg)
+			case *tg.MessageEmpty:
+				missing = append(missing, itoa64(int64(msg.GetID())))
+			}
+		}
+
+		ordered := make([]Message, 0, len(ids))
+		for _, messageID := range ids {
+			msg, ok := byID[messageID]
+			if !ok {
+				missing = append(missing, itoa64(messageID))
+				continue
+			}
+			ordered = append(ordered, msg)
+		}
+
+		if len(missing) > 0 {
+			return fmt.Errorf("messages not found or inaccessible: %s", strings.Join(uniqueStrings(missing), ", "))
+		}
+
+		out = ordered
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return out, nil
 }
 
 func (c *MTProtoCollector) withAPI(ctx context.Context, fn func(ctx context.Context, api *tg.Client) error) error {
@@ -367,6 +471,99 @@ func (c *MTProtoCollector) resolveChannelByUsername(ctx context.Context, api *tg
 
 	if out.AccessHash == nil {
 		return ChannelRef{}, fmt.Errorf("unable to resolve access hash for @%s", username)
+	}
+	return out, nil
+}
+
+func (c *MTProtoCollector) resolveChannelByID(ctx context.Context, api *tg.Client, channelID int64) (ChannelRef, error) {
+	const stopIteration = "telegram_resolve_channel_found"
+
+	var out ChannelRef
+	err := query.GetDialogs(api).BatchSize(100).ForEach(ctx, func(ctx context.Context, elem querydialogs.Elem) error {
+		inputPeer, ok := elem.Peer.(*tg.InputPeerChannel)
+		if !ok || inputPeer.ChannelID != channelID {
+			return nil
+		}
+
+		out = ChannelRef{
+			ID:         &inputPeer.ChannelID,
+			AccessHash: &inputPeer.AccessHash,
+			URL:        PrivateMessageURL(channelID, 1),
+			Title:      "channel:" + itoa64(channelID),
+		}
+
+		if channel, ok := elem.Entities.Channel(channelID); ok {
+			if title := strings.TrimSpace(channel.GetTitle()); title != "" {
+				out.Title = title
+			}
+			if username, ok := channel.GetUsername(); ok && strings.TrimSpace(username) != "" {
+				out.Username = normalizeUsername(username)
+				out.URL = "https://t.me/" + out.Username
+			}
+		}
+
+		return errors.New(stopIteration)
+	})
+	if err != nil && err.Error() != stopIteration {
+		return ChannelRef{}, fmt.Errorf("scan dialogs for channel %d: %w", channelID, err)
+	}
+	if out.ID == nil || out.AccessHash == nil {
+		return ChannelRef{}, fmt.Errorf("channel %d was not found in accessible dialogs", channelID)
+	}
+	return out, nil
+}
+
+func (c *MTProtoCollector) resolveChannelByInviteHash(ctx context.Context, api *tg.Client, inviteHash, sourceURL string) (ChannelRef, error) {
+	inviteHash = strings.TrimSpace(inviteHash)
+	if inviteHash == "" {
+		return ChannelRef{}, errors.New("invite hash is required")
+	}
+	if strings.TrimSpace(sourceURL) == "" {
+		sourceURL = "https://t.me/+" + inviteHash
+	}
+
+	invite, err := api.MessagesCheckChatInvite(ctx, inviteHash)
+	if err != nil {
+		return ChannelRef{}, fmt.Errorf("messages.checkChatInvite %s: %w", inviteHash, err)
+	}
+
+	already, ok := invite.(*tg.ChatInviteAlready)
+	if !ok {
+		return ChannelRef{}, errors.New("invite link is valid, but this Telegram account has not joined the channel; join it with the configured account first")
+	}
+
+	out := ChannelRef{URL: sourceURL}
+	switch chat := already.GetChat().(type) {
+	case *tg.Channel:
+		channelID := chat.GetID()
+		out.ID = &channelID
+		if accessHash, ok := chat.GetAccessHash(); ok {
+			hash := accessHash
+			out.AccessHash = &hash
+		}
+		if title := strings.TrimSpace(chat.GetTitle()); title != "" {
+			out.Title = title
+		}
+		if username, ok := chat.GetUsername(); ok && strings.TrimSpace(username) != "" {
+			out.Username = normalizeUsername(username)
+		}
+	case *tg.ChannelForbidden:
+		channelID := chat.GetID()
+		hash := chat.GetAccessHash()
+		out.ID = &channelID
+		out.AccessHash = &hash
+		if title := strings.TrimSpace(chat.GetTitle()); title != "" {
+			out.Title = title
+		}
+	default:
+		return ChannelRef{}, fmt.Errorf("invite does not point to a channel: %T", already.GetChat())
+	}
+
+	if out.ID == nil || out.AccessHash == nil {
+		return ChannelRef{}, errors.New("unable to resolve access hash from invite link")
+	}
+	if out.Username != "" {
+		out.URL = "https://t.me/" + out.Username
 	}
 	return out, nil
 }
@@ -606,4 +803,37 @@ func clampTLInt(value int64) int {
 		return 0
 	}
 	return int(value)
+}
+
+func sanitizeMessageIDs(messageIDs []int64) []int64 {
+	seen := make(map[int64]struct{}, len(messageIDs))
+	out := make([]int64, 0, len(messageIDs))
+	for _, messageID := range messageIDs {
+		if messageID <= 0 {
+			continue
+		}
+		if _, ok := seen[messageID]; ok {
+			continue
+		}
+		seen[messageID] = struct{}{}
+		out = append(out, messageID)
+	}
+	return out
+}
+
+func uniqueStrings(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
 }

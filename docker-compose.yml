@@ -45,11 +45,19 @@ services:
       PY_YOUTUBE_AUDIO_SERVICE_URL: http://youtube-audio-service:8090
       GOPROXY: "off"
       GOSUMDB: "off"
-    command: sh -lc "/usr/local/go/bin/go run ./cmd/api"
+    command: >
+      sh -lc "if ! command -v pdftotext >/dev/null 2>&1 || ! command -v pdftoppm >/dev/null 2>&1 || ! command -v tesseract >/dev/null 2>&1; then
+      export DEBIAN_FRONTEND=noninteractive &&
+      apt-get update &&
+      apt-get install -y --no-install-recommends poppler-utils tesseract-ocr tesseract-ocr-eng tesseract-ocr-rus &&
+      rm -rf /var/lib/apt/lists/*;
+      fi;
+      /usr/local/go/bin/go run ./cmd/api"
     ports:
       - "18080:8080"
     volumes:
       - ./:/app
+      - ${HOME}:${HOME}:ro
       - ${HOME}/go/pkg/mod:/go/pkg/mod
       - ${HOME}/Library/Caches/go-build:/root/.cache/go-build
     extra_hosts:

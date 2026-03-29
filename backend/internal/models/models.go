@@ -144,6 +144,18 @@ type SourceStats struct {
 	Chunks      int `json:"chunks"`
 }
 
+type TelegramMessageLink struct {
+	ID                string    `json:"id"`
+	SourceID          string    `json:"source_id"`
+	LinkOrder         int       `json:"link_order"`
+	OriginalURL       string    `json:"original_url"`
+	CanonicalURL      string    `json:"canonical_url"`
+	TelegramChannelID *int64    `json:"telegram_channel_id,omitempty"`
+	Username          *string   `json:"username,omitempty"`
+	TelegramMessageID int64     `json:"telegram_message_id"`
+	CreatedAt         time.Time `json:"created_at"`
+}
+
 type YouTubeAudioArtifact struct {
 	ID            string         `json:"id"`
 	SourceID      string         `json:"source_id"`

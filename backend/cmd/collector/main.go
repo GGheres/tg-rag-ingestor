@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 
 	"github.com/joho/godotenv"
 
@@ -14,20 +15,21 @@ import (
 func main() {
 	_ = godotenv.Load()
 	cfg := config.Load()
-
-	var collector telegram.Collector
-	if cfg.TelegramMode == "mtproto" {
-		collector = telegram.NewMTProtoCollector(
-			cfg.TelegramAPIID,
-			cfg.TelegramAPIHash,
-			cfg.TelegramPhone,
-			cfg.TelegramSessionFile,
-			cfg.TelegramPassword,
-			cfg.TelegramAuthCode,
-		)
-	} else {
-		collector = telegram.NewStubCollector()
+	if err := cfg.ValidateTelegramRuntime(); err != nil {
+		log.Fatal(err)
 	}
+	if strings.ToLower(strings.TrimSpace(cfg.TelegramMode)) != "mtproto" {
+		log.Fatal("TELEGRAM_MODE must be mtproto for collector command")
+	}
+
+	collector := telegram.NewMTProtoCollector(
+		cfg.TelegramAPIID,
+		cfg.TelegramAPIHash,
+		cfg.TelegramPhone,
+		cfg.TelegramSessionFile,
+		cfg.TelegramPassword,
+		cfg.TelegramAuthCode,
+	)
 
 	channel, err := collector.ResolveChannel(context.Background(), telegram.ResolveInput{
 		Username: "durov",

@@ -25,10 +25,11 @@ func NewService(repo *storage.Repository, chunkCfg chunking.Config) *Service {
 }
 
 type ProcessResult struct {
-	DocumentID  string
-	IsTrash     bool
-	IsDuplicate bool
-	ChunkCount  int
+	DocumentID       string
+	IsTrash          bool
+	IsDuplicate      bool
+	ChunkCount       int
+	IncludedMessages int
 }
 
 func (s *Service) ProcessRawMessage(ctx context.Context, source models.Source, raw models.RawMessage) (ProcessResult, error) {

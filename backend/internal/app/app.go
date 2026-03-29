@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 
 	"tg-rag-ingestor/backend/internal/chunking"
 	"tg-rag-ingestor/backend/internal/config"
@@ -12,6 +13,7 @@ import (
 	"tg-rag-ingestor/backend/internal/export"
 	"tg-rag-ingestor/backend/internal/filescan"
 	"tg-rag-ingestor/backend/internal/ingestion"
+	"tg-rag-ingestor/backend/internal/model"
 	"tg-rag-ingestor/backend/internal/processing"
 	"tg-rag-ingestor/backend/internal/storage"
 	"tg-rag-ingestor/backend/internal/telegram"
@@ -25,12 +27,16 @@ type App struct {
 	YouTubeService   *youtube.Service
 	ExportService    *export.Service
 	FileScanService  *filescan.Service
+	HHConfig         model.HHConfig
 	Logger           *slog.Logger
 	Close            func()
 }
 
 func New(ctx context.Context, cfg config.Config) (*App, error) {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	if err := cfg.ValidateAppRuntime(); err != nil {
+		return nil, err
+	}
 
 	pool, err := db.NewPool(cfg.PostgresDSN)
 	if err != nil {
@@ -44,19 +50,18 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 
 	repo := storage.NewRepository(pool)
 
-	var collector telegram.Collector
-	if cfg.TelegramMode == "mtproto" {
-		collector = telegram.NewMTProtoCollector(
-			cfg.TelegramAPIID,
-			cfg.TelegramAPIHash,
-			cfg.TelegramPhone,
-			cfg.TelegramSessionFile,
-			cfg.TelegramPassword,
-			cfg.TelegramAuthCode,
-		)
-	} else {
-		collector = telegram.NewStubCollector()
-	}
+	collector := telegram.NewMTProtoCollector(
+		cfg.TelegramAPIID,
+		cfg.TelegramAPIHash,
+		cfg.TelegramPhone,
+		cfg.TelegramSessionFile,
+		cfg.TelegramPassword,
+		cfg.TelegramAuthCode,
+	)
+	logger.Info("telegram_collector_initialized",
+		"mode", strings.ToLower(strings.TrimSpace(cfg.TelegramMode)),
+		"session_file", cfg.TelegramSessionFile,
+	)
 
 	processingService := processing.NewService(repo, chunking.DefaultConfig())
 	ingestionService := ingestion.NewService(repo, collector, processingService, cfg.DefaultSyncBatchSize)
@@ -73,6 +78,26 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 		return nil, fmt.Errorf("create filesystem scan service: %w", err)
 	}
 
+	hhCfg := model.HHConfig{
+		ClientID:             cfg.HHClientID,
+		ClientSecret:         cfg.HHClientSecret,
+		AccessToken:          cfg.HHAccessToken,
+		RefreshToken:         cfg.HHRefreshToken,
+		RedirectURI:          cfg.HHRedirectURI,
+		UserAgent:            cfg.HHUserAgent,
+		OutputDir:            cfg.HHOutputDir,
+		BaseURL:              cfg.HHBaseURL,
+		TokenURL:             cfg.HHTokenURL,
+		AuthURL:              cfg.HHAuthURL,
+		RequestTimeoutSec:    cfg.HHRequestTimeoutSec,
+		RateLimitPerSecond:   cfg.HHRateLimitPerSecond,
+		RetryMax:             cfg.HHRetryMax,
+		RetryBaseBackoffMS:   cfg.HHRetryBaseBackoffMS,
+		RetryMaxBackoffMS:    cfg.HHRetryMaxBackoffMS,
+		Concurrency:          cfg.HHConcurrency,
+		SaveOriginalsDefault: cfg.HHSaveOriginalsDefault,
+	}
+
 	return &App{
 		Config:           cfg,
 		Repository:       repo,
@@ -80,6 +105,7 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 		YouTubeService:   youtubeService,
 		ExportService:    exportService,
 		FileScanService:  fileScanService,
+		HHConfig:         hhCfg,
 		Logger:           logger,
 		Close:            pool.Close,
 	}, nil

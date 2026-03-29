@@ -1,12 +1,14 @@
 module tg-rag-ingestor/backend
 
-go 1.24.0
+go 1.24.1
 
 require (
 	github.com/go-chi/chi/v5 v5.2.1
 	github.com/gotd/td v0.141.0
 	github.com/jackc/pgx/v5 v5.7.2
 	github.com/joho/godotenv v1.5.1
+	golang.org/x/net v0.50.0
+	golang.org/x/sync v0.19.0
 	golang.org/x/term v0.40.0
 )
 
@@ -42,8 +44,6 @@ require (
 	golang.org/x/crypto v0.48.0 // indirect
 	golang.org/x/exp v0.0.0-20230725093048-515e97ebf090 // indirect
 	golang.org/x/mod v0.33.0 // indirect
-	golang.org/x/net v0.50.0 // indirect
-	golang.org/x/sync v0.19.0 // indirect
 	golang.org/x/sys v0.41.0 // indirect
 	golang.org/x/text v0.34.0 // indirect
 	golang.org/x/tools v0.42.0 // indirect

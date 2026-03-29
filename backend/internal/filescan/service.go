@@ -6,9 +6,11 @@ import (
 	"compress/bzip2"
 	"compress/gzip"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -108,7 +110,7 @@ type scanState struct {
 }
 
 func (s *Service) ScanDirectory(ctx context.Context, input ScanDirectoryInput) (ScanDirectoryResult, error) {
-	rootPath := strings.TrimSpace(input.Path)
+	rootPath := normalizeInputPath(strings.TrimSpace(input.Path))
 	if rootPath == "" {
 		return ScanDirectoryResult{}, fmt.Errorf("path is required")
 	}
@@ -119,7 +121,14 @@ func (s *Service) ScanDirectory(ctx context.Context, input ScanDirectoryInput) (
 	}
 	info, err := os.Stat(absRoot)
 	if err != nil {
-		return ScanDirectoryResult{}, fmt.Errorf("stat path: %w", err)
+		switch {
+		case errors.Is(err, fs.ErrNotExist):
+			return ScanDirectoryResult{}, fmt.Errorf("directory does not exist: %s%s", absRoot, containerMountHint())
+		case errors.Is(err, fs.ErrPermission):
+			return ScanDirectoryResult{}, fmt.Errorf("directory is not accessible (permission denied): %s", absRoot)
+		default:
+			return ScanDirectoryResult{}, fmt.Errorf("inspect path %s: %w", absRoot, err)
+		}
 	}
 	if !info.IsDir() {
 		return ScanDirectoryResult{}, fmt.Errorf("path must point to a directory")
@@ -150,6 +159,9 @@ func (s *Service) ScanDirectory(ctx context.Context, input ScanDirectoryInput) (
 		if entry.IsDir() {
 			return nil
 		}
+		if isIgnorableSystemFile(entry.Name()) {
+			return nil
+		}
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -169,6 +181,56 @@ func (s *Service) ScanDirectory(ctx context.Context, input ScanDirectoryInput) (
 	state.result.TotalFiles = len(state.result.Files)
 
 	return state.result, nil
+}
+
+func normalizeInputPath(raw string) string {
+	path := strings.TrimSpace(raw)
+	if path == "" {
+		return ""
+	}
+	if !strings.HasPrefix(strings.ToLower(path), "file:") {
+		return path
+	}
+
+	if parsed, err := url.Parse(path); err == nil && strings.EqualFold(parsed.Scheme, "file") {
+		candidate := parsed.Path
+		if candidate == "" {
+			candidate = parsed.Opaque
+		}
+		if parsed.Host != "" && !strings.EqualFold(parsed.Host, "localhost") {
+			candidate = "//" + parsed.Host + candidate
+		}
+		if candidate != "" {
+			if unescaped, unescapeErr := url.PathUnescape(candidate); unescapeErr == nil {
+				candidate = unescaped
+			}
+			return strings.TrimSpace(candidate)
+		}
+	}
+
+	fallback := strings.TrimPrefix(path, "file://")
+	fallback = strings.TrimPrefix(fallback, "file:")
+	if unescaped, err := url.PathUnescape(fallback); err == nil {
+		return strings.TrimSpace(unescaped)
+	}
+	return strings.TrimSpace(fallback)
+}
+
+func containerMountHint() string {
+	if _, err := os.Stat("/.dockerenv"); err == nil {
+		return " (api is running in Docker; mount this host directory into the api container or use a mounted path)"
+	}
+	return ""
+}
+
+func isIgnorableSystemFile(name string) bool {
+	lower := strings.ToLower(strings.TrimSpace(name))
+	switch lower {
+	case ".ds_store", "thumbs.db", "desktop.ini":
+		return true
+	default:
+		return strings.HasPrefix(lower, "._")
+	}
 }
 
 func (s *Service) scanFile(ctx context.Context, state *scanState, resolvedPath string, logicalPath string, archiveDepth int) error {
@@ -267,6 +329,9 @@ func (s *Service) extractAndScanArchive(ctx context.Context, state *scanState, a
 			return walkErr
 		}
 		if entry.IsDir() {
+			return nil
+		}
+		if isIgnorableSystemFile(entry.Name()) {
 			return nil
 		}
 		if err := ctx.Err(); err != nil {

@@ -9,6 +9,7 @@ import {
   getDocuments,
   getRawMessages,
   getSource,
+  getTelegramMessageLinks,
   transcribeYouTubeAudioSource,
   getYouTubeSource,
   getYouTubeSourceAudio,
@@ -16,7 +17,15 @@ import {
   youTubeAudioDownloadURL,
 } from "../api/client";
 import StatusBadge from "../components/StatusBadge";
-import type { Chunk, Document, RawMessage, Source, SourceStats, YouTubeAudioArtifact } from "../types";
+import type {
+  Chunk,
+  Document,
+  RawMessage,
+  Source,
+  SourceStats,
+  TelegramMessageLink,
+  YouTubeAudioArtifact,
+} from "../types";
 
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
@@ -58,6 +67,13 @@ function formatSeconds(seconds: number | null): string {
   return `${mins}m ${secs.toFixed(1)}s`;
 }
 
+function displaySourceURL(source: Source): string {
+  if (source.source_type === "telegram_channel_document" && source.external_id) {
+    return source.external_id;
+  }
+  return source.url;
+}
+
 export default function SourceDetailsPage() {
   const { id = "" } = useParams();
 
@@ -66,6 +82,7 @@ export default function SourceDetailsPage() {
   const [audioArtifact, setAudioArtifact] = useState<YouTubeAudioArtifact | null>(null);
 
   const [rawMessages, setRawMessages] = useState<RawMessage[]>([]);
+  const [messageLinks, setMessageLinks] = useState<TelegramMessageLink[]>([]);
   const [documents, setDocuments] = useState<Document[]>([]);
   const [selectedDocument, setSelectedDocument] = useState<Document | null>(null);
   const [chunks, setChunks] = useState<Chunk[]>([]);
@@ -94,6 +111,7 @@ export default function SourceDetailsPage() {
         setStats(sourceResp.stats);
         setAudioArtifact(audioResp.artifact ?? null);
         setRawMessages([]);
+        setMessageLinks([]);
         setDocuments(docsResp);
         if (docsResp.length > 0) {
           const detail = await getDocument(docsResp[0].id);
@@ -104,10 +122,18 @@ export default function SourceDetailsPage() {
           setChunks([]);
         }
       } else {
-        const [sourceResp, rawResp, docsResp] = await Promise.all([getSource(id), getRawMessages(id, 50), getDocuments(id, 50)]);
+        const [sourceResp, rawResp, docsResp, linkResp] = await Promise.all([
+          getSource(id),
+          getRawMessages(id, 50),
+          getDocuments(id, 50),
+          sourceType === "telegram_message_links" || sourceType === "telegram_channel_document"
+            ? getTelegramMessageLinks(id)
+            : Promise.resolve([]),
+        ]);
         setSource(sourceResp.source);
         setStats(sourceResp.stats);
         setRawMessages(rawResp);
+        setMessageLinks(linkResp);
         setDocuments(docsResp);
         setAudioArtifact(null);
 
@@ -217,6 +243,8 @@ export default function SourceDetailsPage() {
 
   const isYouTube = source.source_type === "youtube_video";
   const isTelegram = source.source_type === "telegram_public_channel";
+  const isTelegramChannelDocument = source.source_type === "telegram_channel_document";
+  const isTelegramMessageLinks = source.source_type === "telegram_message_links";
   const isJSONUpload = source.source_type === "json_upload";
   const audioRaw = asRecord(audioArtifact?.raw_json);
   const downloadMetadata = asRecord(audioRaw.download_metadata);
@@ -261,10 +289,18 @@ export default function SourceDetailsPage() {
                   {exportingTXT ? "Preparing TXT..." : "Export TXT RAG"}
                 </button>
               </>
-            ) : isTelegram ? (
+            ) : isTelegram || isTelegramMessageLinks || isTelegramChannelDocument ? (
               <>
                 <button className="btn primary" onClick={() => void onSync()} disabled={syncing}>
-                  {syncing ? "Syncing full history..." : "Sync full history"}
+                  {syncing
+                    ? isTelegramMessageLinks || isTelegramChannelDocument
+                      ? "Fetching message links..."
+                      : "Syncing full history..."
+                    : isTelegramMessageLinks
+                      ? "Fetch message links"
+                      : isTelegramChannelDocument
+                        ? "Build channel document"
+                      : "Sync full history"}
                 </button>
                 <button className="btn" onClick={() => void onExportTXT()} disabled={exportingTXT}>
                   {exportingTXT ? "Preparing TXT..." : "Export full TXT RAG"}
@@ -278,7 +314,7 @@ export default function SourceDetailsPage() {
           </div>
         </div>
 
-        <p>{source.url}</p>
+        <p>{displaySourceURL(source)}</p>
         <p>
           Source type: <strong>{source.source_type}</strong> | Provider: <strong>{source.provider || "-"}</strong>
           {source.external_id ? (
@@ -313,6 +349,29 @@ export default function SourceDetailsPage() {
           </article>
         </div>
       </div>
+
+      {(isTelegramMessageLinks || isTelegramChannelDocument) && (
+        <div className="card">
+          <h2>Configured Message Links</h2>
+          <div className="list-scroll">
+            {messageLinks.map((item) => (
+              <article className="list-item" key={item.id}>
+                <header>
+                  <strong>#{item.link_order}</strong>
+                  <small>Message {item.telegram_message_id}</small>
+                </header>
+                <p>
+                  <a href={item.canonical_url} target="_blank" rel="noreferrer">
+                    {item.canonical_url}
+                  </a>
+                </p>
+                {item.original_url !== item.canonical_url ? <small>{item.original_url}</small> : null}
+              </article>
+            ))}
+            {messageLinks.length === 0 && <p>No configured message links.</p>}
+          </div>
+        </div>
+      )}
 
       {isYouTube && (
         <div className="card">

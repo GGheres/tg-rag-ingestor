@@ -1,10 +1,17 @@
 import type {
   Chunk,
   Document,
+  FilesystemRAGExportResult,
   FilesystemScanResult,
+  HHConfigStatus,
+  HHVacancyCatalog,
+  HHExtractionDetails,
+  HHExtractionListItem,
+  HHOAuthExchangeResponse,
   RawMessage,
   Source,
   SourceStats,
+  TelegramMessageLink,
   YouTubeAudioDetails,
 } from "../types";
 
@@ -45,8 +52,30 @@ export function getSources() {
   return request<Source[]>("/api/sources");
 }
 
+export function clearSourcesHistory() {
+  return request<{ deleted_count: number }>("/api/sources", {
+    method: "DELETE",
+  });
+}
+
 export function createSource(payload: { url?: string; username?: string }) {
   return request<Source>("/api/sources", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export function createTelegramMessageLinkSource(payload: { title?: string; message_links: string[] }) {
+  return request<Source>("/api/sources/telegram-message-links", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export function createTelegramChannelDocumentSource(payload: { title?: string; url: string }) {
+  return request<Source>("/api/sources/telegram-channel-document", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
@@ -79,6 +108,14 @@ export function importJSONFile(payload: { file: File }) {
 
 export function scanFilesystemDirectory(payload: { path: string }) {
   return request<FilesystemScanResult>("/api/filesystem/scan", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export function createFilesystemRAGExport(payload: { path: string; include_skipped?: boolean }) {
+  return request<FilesystemRAGExportResult>("/api/filesystem/export-rag", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
@@ -144,6 +181,10 @@ export function getRawMessages(sourceID: string, limit = 100) {
   return request<RawMessage[]>(`/api/sources/${sourceID}/raw-messages?limit=${limit}`);
 }
 
+export function getTelegramMessageLinks(sourceID: string) {
+  return request<TelegramMessageLink[]>(`/api/sources/${sourceID}/message-links`);
+}
+
 export function getDocuments(sourceID: string, limit = 100) {
   return request<Document[]>(`/api/sources/${sourceID}/documents?limit=${limit}`);
 }
@@ -180,4 +221,57 @@ export function documentDownloadURL(id: string, format: "txt" | "json" = "txt") 
 
 export function youTubeAudioDownloadURL(audioFilePath: string) {
   return `${PY_SERVICE_URL}/api/download-youtube-audio-file?path=${encodeURIComponent(audioFilePath)}`;
+}
+
+export function getHHConfig() {
+  return request<HHConfigStatus>("/api/hh/config");
+}
+
+export function listHHVacancies() {
+  return request<HHVacancyCatalog>("/api/hh/vacancies");
+}
+
+export function exchangeHHOAuthCode(payload: { code: string }) {
+  return request<HHOAuthExchangeResponse>("/api/hh/oauth/exchange", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export function startHHExtraction(payload: {
+  vacancy_id: string;
+  manager_account_id?: string;
+  dry_run?: boolean;
+  export_pdf?: boolean;
+  save_originals?: boolean;
+}) {
+  return request<{
+    extraction_id: string;
+    vacancy_id: string;
+    manager_account_id?: string;
+    status: string;
+    output_dir: string;
+  }>("/api/hh/extract", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export function listHHExtractions() {
+  return request<HHExtractionListItem[]>("/api/hh/extractions");
+}
+
+export function getHHExtraction(extractionID: string) {
+  return request<HHExtractionDetails>(`/api/hh/extractions/${extractionID}`);
+}
+
+export function hhExtractionFileURL(extractionID: string, filename: string) {
+  const encodedFileName = encodeURIComponent(filename);
+  if (filename.startsWith("originals/")) {
+    const base = filename.slice("originals/".length);
+    return `${API_URL}/api/hh/extractions/${extractionID}/files/${encodeURIComponent(base)}?subdir=originals`;
+  }
+  return `${API_URL}/api/hh/extractions/${extractionID}/files/${encodedFileName}`;
 }

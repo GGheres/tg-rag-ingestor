@@ -1,11 +1,17 @@
+//go:build dev
+// +build dev
+
 package telegram
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"time"
 )
 
+// StubCollector is a development-only collector that synthesizes Telegram data.
+// It is excluded from normal builds and can be enabled only with `-tags=dev`.
 type StubCollector struct{}
 
 func NewStubCollector() *StubCollector {
@@ -14,20 +20,35 @@ func NewStubCollector() *StubCollector {
 
 func (c *StubCollector) ResolveChannel(ctx context.Context, input ResolveInput) (ChannelRef, error) {
 	_ = ctx
-	username, sourceURL, err := ResolveUsername(input)
+	channelLink, err := ParseChannelLink(input)
 	if err != nil {
 		return ChannelRef{}, err
 	}
-
-	channelID := int64(900000 + len(username))
-	accessHash := int64(700000 + len(username)*17)
-
+	if channelLink.Username != "" {
+		return stubChannelRef(channelLink.Username, channelLink.NormalizedURL), nil
+	}
+	channelID := int64(880000 + len(channelLink.InviteHash))
+	accessHash := int64(770000 + len(channelLink.InviteHash)*13)
 	return ChannelRef{
 		ID:         &channelID,
 		AccessHash: &accessHash,
-		Username:   username,
-		Title:      "@" + username,
-		URL:        sourceURL,
+		Title:      "invite-" + channelLink.InviteHash,
+		URL:        channelLink.NormalizedURL,
+	}, nil
+}
+
+func (c *StubCollector) ResolveChannelByID(ctx context.Context, channelID int64) (ChannelRef, error) {
+	_ = ctx
+	if channelID <= 0 {
+		return ChannelRef{}, fmt.Errorf("channel id must be positive")
+	}
+
+	accessHash := int64(700000 + (channelID % 100000) + 17)
+	return ChannelRef{
+		ID:         &channelID,
+		AccessHash: &accessHash,
+		Title:      "private-channel-" + itoa64(channelID),
+		URL:        PrivateMessageURL(channelID, 1),
 	}, nil
 }
 
@@ -70,57 +91,7 @@ func (c *StubCollector) FetchChannelHistory(ctx context.Context, channel Channel
 	}
 	messages := make([]Message, 0, capSize)
 	for msgID := startID; msgID >= endID; msgID-- {
-		if msgID%17 == 0 {
-			// simulate deleted/service-like message
-			messages = append(messages, Message{
-				MessageID: msgID,
-				TextRaw:   "   ",
-				RawJSON: map[string]any{
-					"kind": "service",
-				},
-			})
-			continue
-		}
-
-		base := "Update from @" + channel.Username + ": release " + itoa64(msgID) + ". " +
-			"Read: https://example.com/post/" + itoa64(msgID) + "?utm_source=tg #release @team"
-		if msgID%9 == 0 {
-			base = "🔥🔥🔥 " + base + " 🚀🚀🚀"
-		}
-		if msgID%11 == 0 {
-			base = "Duplicate message template with link https://example.com/dup #dup"
-		}
-
-		views := int(msgID * 10)
-		forwards := int(msgID % 5)
-		posted := now.Add(-time.Duration(maxHistoryMessages-msgID) * time.Hour)
-		isForward := msgID%8 == 0
-
-		msg := Message{
-			MessageID:     msgID,
-			PostedAt:      &posted,
-			TextRaw:       strings.TrimSpace(base),
-			CaptionRaw:    "",
-			RawJSON:       map[string]any{"message_id": msgID, "source": "stub"},
-			EntitiesJSON:  map[string]any{"hashtags": []string{"release"}},
-			ViewsCount:    &views,
-			ForwardsCount: &forwards,
-			HasMedia:      msgID%4 == 0,
-		}
-
-		if msg.HasMedia {
-			msg.MediaJSON = map[string]any{"type": "photo"}
-			msg.CaptionRaw = "Image caption for " + itoa64(msgID) + " https://img.example.com/" + itoa64(msgID)
-		}
-
-		if isForward {
-			forwardName := "Forwarded Author"
-			forwardChat := "@origin_channel"
-			msg.ForwardFromName = &forwardName
-			msg.ForwardFromChat = &forwardChat
-		}
-
-		messages = append(messages, msg)
+		messages = append(messages, buildStubMessage(channel, msgID, now))
 	}
 
 	var nextCursor *string
@@ -133,6 +104,19 @@ func (c *StubCollector) FetchChannelHistory(ctx context.Context, channel Channel
 		Messages:   messages,
 		NextCursor: nextCursor,
 	}, nil
+}
+
+func (c *StubCollector) FetchMessages(ctx context.Context, channel ChannelRef, messageIDs []int64) ([]Message, error) {
+	_ = ctx
+	now := time.Now().UTC()
+	out := make([]Message, 0, len(messageIDs))
+	for _, messageID := range messageIDs {
+		if messageID <= 0 {
+			continue
+		}
+		out = append(out, buildStubMessage(channel, messageID, now))
+	}
+	return out, nil
 }
 
 func parseInt64(v string) (int64, bool) {
@@ -155,4 +139,77 @@ func parseInt64(v string) (int64, bool) {
 		n = (n * 10) + int64(r-'0')
 	}
 	return n * sign, true
+}
+
+func stubChannelRef(username, sourceURL string) ChannelRef {
+	channelID := int64(900000 + len(username))
+	accessHash := int64(700000 + len(username)*17)
+	return ChannelRef{
+		ID:         &channelID,
+		AccessHash: &accessHash,
+		Username:   username,
+		Title:      "@" + username,
+		URL:        sourceURL,
+	}
+}
+
+func buildStubMessage(channel ChannelRef, msgID int64, now time.Time) Message {
+	if msgID%17 == 0 {
+		return Message{
+			MessageID: msgID,
+			TextRaw:   "   ",
+			RawJSON: map[string]any{
+				"kind": "service",
+			},
+		}
+	}
+
+	channelLabel := channel.Username
+	if strings.TrimSpace(channelLabel) == "" {
+		if channel.ID != nil {
+			channelLabel = "private_" + itoa64(*channel.ID)
+		} else {
+			channelLabel = "channel"
+		}
+	}
+
+	base := "Update from @" + channelLabel + ": release " + itoa64(msgID) + ". " +
+		"Read: https://example.com/post/" + itoa64(msgID) + "?utm_source=tg #release @team"
+	if msgID%9 == 0 {
+		base = "🔥🔥🔥 " + base + " 🚀🚀🚀"
+	}
+	if msgID%11 == 0 {
+		base = "Duplicate message template with link https://example.com/dup #dup"
+	}
+
+	views := int(msgID * 10)
+	forwards := int(msgID % 5)
+	posted := now.Add(-time.Duration(2000-msgID%2000) * time.Hour)
+	isForward := msgID%8 == 0
+
+	msg := Message{
+		MessageID:     msgID,
+		PostedAt:      &posted,
+		TextRaw:       strings.TrimSpace(base),
+		CaptionRaw:    "",
+		RawJSON:       map[string]any{"message_id": msgID, "source": "stub"},
+		EntitiesJSON:  map[string]any{"hashtags": []string{"release"}},
+		ViewsCount:    &views,
+		ForwardsCount: &forwards,
+		HasMedia:      msgID%4 == 0,
+	}
+
+	if msg.HasMedia {
+		msg.MediaJSON = map[string]any{"type": "photo"}
+		msg.CaptionRaw = "Image caption for " + itoa64(msgID) + " https://img.example.com/" + itoa64(msgID)
+	}
+
+	if isForward {
+		forwardName := "Forwarded Author"
+		forwardChat := "@origin_channel"
+		msg.ForwardFromName = &forwardName
+		msg.ForwardFromChat = &forwardChat
+	}
+
+	return msg
 }

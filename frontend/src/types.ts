@@ -33,6 +33,18 @@ export type RawMessage = {
   created_at: string;
 };
 
+export type TelegramMessageLink = {
+  id: string;
+  source_id: string;
+  link_order: number;
+  original_url: string;
+  canonical_url: string;
+  telegram_channel_id?: number | null;
+  username?: string | null;
+  telegram_message_id: number;
+  created_at: string;
+};
+
 export type Document = {
   id: string;
   source_id: string;
@@ -106,4 +118,103 @@ export type FilesystemScanResult = {
   unsupported_archive_formats: string[];
   skipped_archives: FilesystemSkippedArchive[];
   files: FilesystemScannedFile[];
+};
+
+export type FilesystemRAGExportResult = {
+  export_id: string;
+  file_path: string;
+  row_count: number;
+  scanned_files: number;
+  exported_files: number;
+  skipped_files: number;
+};
+
+export type HHConfigStatus = {
+  configured: boolean;
+  has_access_token: boolean;
+  has_refresh_token: boolean;
+  user_agent: string;
+  output_dir: string;
+  redirect_uri: string;
+  base_url: string;
+  oauth_authorize_url: string;
+};
+
+export type HHOAuthExchangeResponse = {
+  access_token: string;
+  refresh_token: string;
+  token_type: string;
+  expires_in: number;
+  note: string;
+};
+
+export type HHManagerAccount = {
+  id: string;
+  employer_id: string;
+  employer_name: string;
+  is_current: boolean;
+  is_primary: boolean;
+};
+
+export type HHVacancyListItem = {
+  id: string;
+  name: string;
+  status: string;
+  manager_account_id: string;
+  employer_id: string;
+  employer_name: string;
+  alternate_url?: string;
+  published_at?: string;
+  archived_at?: string;
+  responses?: number;
+  views?: number;
+};
+
+export type HHVacancyCatalog = {
+  accounts: HHManagerAccount[];
+  current_account_id: string;
+  vacancies: HHVacancyListItem[];
+};
+
+export type HHCandidateManifest = {
+  candidate_id: string;
+  resume_id: string;
+  fio: string;
+  status: string;
+  downloaded_original: boolean;
+  included_in_combined: boolean;
+  error_message?: string;
+  original_file?: string;
+};
+
+export type HHRunManifest = {
+  vacancy_id: string;
+  provider: string;
+  created_at: string;
+  total_found: number;
+  processed: number;
+  succeeded: number;
+  failed: number;
+  dry_run: boolean;
+  candidates: HHCandidateManifest[];
+};
+
+export type HHExtractionListItem = {
+  id: string;
+  vacancy_id: string;
+  status: string;
+  created_at: string;
+  provider?: string;
+  total_found: number;
+  succeeded: number;
+  failed: number;
+  dry_run: boolean;
+  files: string[];
+};
+
+export type HHExtractionDetails = {
+  extraction_id: string;
+  status: string;
+  files?: string[];
+  manifest?: HHRunManifest;
 };

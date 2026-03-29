@@ -5,6 +5,9 @@ import (
 	"time"
 )
 
+const MessageLinkSourceType = "telegram_message_links"
+const ChannelDocumentSourceType = "telegram_channel_document"
+
 type ResolveInput struct {
 	URL      string
 	Username string
@@ -29,6 +32,14 @@ type FetchPage struct {
 	NextCursor *string
 }
 
+type MessageLink struct {
+	OriginalURL  string
+	CanonicalURL string
+	Username     string
+	ChannelID    *int64
+	MessageID    int64
+}
+
 type Message struct {
 	MessageID        int64
 	GroupedID        *int64
@@ -50,5 +61,7 @@ type Message struct {
 
 type Collector interface {
 	ResolveChannel(ctx context.Context, input ResolveInput) (ChannelRef, error)
+	ResolveChannelByID(ctx context.Context, channelID int64) (ChannelRef, error)
 	FetchChannelHistory(ctx context.Context, channel ChannelRef, opts FetchOptions) (FetchPage, error)
+	FetchMessages(ctx context.Context, channel ChannelRef, messageIDs []int64) ([]Message, error)
 }
