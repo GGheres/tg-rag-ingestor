@@ -48,9 +48,32 @@ type TranscribeAudioResult struct {
 	Metadata     map[string]any      `json:"metadata"`
 }
 
+type UploadAndTranscribeRequest struct {
+	SourceID string
+	FileName string
+	FileData []byte
+	Language *string
+	Speakers *int
+}
+
+type UploadAndTranscribeResult struct {
+	SourceID     string              `json:"source_id"`
+	FileName     string              `json:"filename"`
+	AudioPath    string              `json:"audio_file_path"`
+	Provider     string              `json:"provider"`
+	Model        string              `json:"model"`
+	Language     *string             `json:"language,omitempty"`
+	FullTextRaw  string              `json:"full_text_raw"`
+	FullTextRAG  string              `json:"full_text_rag"`
+	SpeakerRoles map[string]string   `json:"speaker_roles"`
+	Segments     []TranscribeSegment `json:"segments"`
+	Metadata     map[string]any      `json:"metadata"`
+}
+
 type AudioProvider interface {
 	DownloadYouTubeAudio(ctx context.Context, req DownloadAudioRequest) (DownloadAudioResult, error)
 	TranscribeYouTubeAudio(ctx context.Context, req TranscribeAudioRequest) (TranscribeAudioResult, error)
+	UploadAndTranscribeAudio(ctx context.Context, req UploadAndTranscribeRequest) (UploadAndTranscribeResult, error)
 }
 
 type ProviderError struct {

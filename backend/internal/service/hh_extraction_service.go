@@ -158,6 +158,7 @@ func (s *HHExtractionService) Run(ctx context.Context, request model.ExtractionR
 		row.IncludedInCombined = true
 		if result.resume != nil {
 			row.FIO = result.resume.FIO()
+			result.resume.CoverLetter = result.candidate.CoverLetter
 		}
 		successResumes = append(successResumes, result.resume)
 		manifest.Candidates = append(manifest.Candidates, row)

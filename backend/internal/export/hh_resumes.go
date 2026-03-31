@@ -202,6 +202,13 @@ func writeResumeBlock(b *strings.Builder, resumeItem *model.Resume, vacancyID st
 	} else {
 		b.WriteString(strings.TrimSpace(resumeItem.Skills) + "\n")
 	}
+
+	b.WriteString("\nСопроводительное письмо:\n")
+	if strings.TrimSpace(resumeItem.CoverLetter) == "" {
+		b.WriteString("[НЕ ПРИЛОЖЕНО]\n")
+	} else {
+		b.WriteString(strings.TrimSpace(resumeItem.CoverLetter) + "\n")
+	}
 }
 
 func formatArea(area *model.NamedRef) string {
@@ -345,6 +352,10 @@ var combinedHTMLTemplate = `<!DOCTYPE html>
       <section class="section">
         <h3>О себе</h3>
         {{if .Skills}}<p>{{.Skills}}</p>{{else}}<p class="na">[НЕДОСТУПНО ЧЕРЕЗ API / СКРЫТО]</p>{{end}}
+      </section>
+      <section class="section">
+        <h3>Сопроводительное письмо</h3>
+        {{if .CoverLetter}}<p>{{.CoverLetter}}</p>{{else}}<p class="na">[НЕ ПРИЛОЖЕНО]</p>{{end}}
       </section>
     </article>
     {{end}}

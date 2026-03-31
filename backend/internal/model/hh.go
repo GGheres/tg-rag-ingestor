@@ -110,11 +110,13 @@ type NegotiationCollection struct {
 }
 
 type NegotiationCandidate struct {
-	CandidateID string
-	ResumeID    string
-	ResumeURL   string
-	FIO         string
-	UpdatedAt   string
+	CandidateID  string
+	NegotiationID string
+	ResumeID     string
+	ResumeURL    string
+	FIO          string
+	UpdatedAt    string
+	CoverLetter  string
 }
 
 type Resume struct {
@@ -135,6 +137,7 @@ type Resume struct {
 	AlternateURL string         `json:"alternate_url"`
 	UpdatedAt    string         `json:"updated_at"`
 	CreatedAt    string         `json:"created_at"`
+	CoverLetter  string         `json:"-"`
 }
 
 type NamedRef struct {

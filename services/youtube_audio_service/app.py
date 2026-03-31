@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, File, Form, Query, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
@@ -59,6 +59,21 @@ class TranscribeAudioRequest(BaseModel):
     audio_file_path: str = Field(..., min_length=1)
     video_id: str | None = None
     language: str | None = None
+    speakers: int | None = Field(None, ge=1, le=20)
+
+
+class UploadTranscribeResponse(BaseModel):
+    source_id: str
+    filename: str
+    audio_file_path: str
+    provider: str
+    model: str
+    language: str | None = None
+    full_text_raw: str
+    full_text_rag: str
+    speaker_roles: dict[str, str]
+    segments: list[TranscribeSegment]
+    metadata: dict[str, Any]
 
 
 class TranscribeSegment(BaseModel):
@@ -341,14 +356,18 @@ def build_rag_text(
     language: str | None,
     speaker_roles: dict[str, str],
     segments: list[dict[str, Any]],
+    source_type: str = "youtube_video",
+    filename: str | None = None,
 ) -> str:
     lines: list[str] = [
         "<<<RAG_DOCUMENT>>>",
-        "source: youtube_video",
+        f"source: {source_type}",
         f"source_id: {source_id}",
     ]
     if video_id:
         lines.append(f"video_id: {video_id}")
+    if filename:
+        lines.append(f"filename: {filename}")
     if language:
         lines.append(f"language: {language}")
     lines.extend(["provider: deepgram", "---"])
@@ -934,6 +953,8 @@ def execute_transcribe_audio(payload: TranscribeAudioRequest) -> TranscribeAudio
             details={"error": str(exc)},
         ) from exc
 
+    speakers = payload.speakers
+
     options: dict[str, Any] = {
         "model": model,
         "smart_format": smart_format,
@@ -942,6 +963,8 @@ def execute_transcribe_audio(payload: TranscribeAudioRequest) -> TranscribeAudio
         "utterances": True,
         "paragraphs": paragraphs,
     }
+    if speakers is not None and speakers >= 1:
+        options["extra"] = f"speakers={speakers}"
     if language:
         options["language"] = language
     else:
@@ -1198,3 +1221,111 @@ def download_youtube_audio_file(path: str = Query(..., min_length=1)):
     audio_path = resolve_stored_audio_path(path)
     media_type = guess_media_type(audio_path)
     return FileResponse(path=audio_path, media_type=media_type, filename=audio_path.name)
+
+
+def store_uploaded_audio(uploaded_path: Path, source_id: str, original_filename: str) -> Path:
+    storage_dir = resolve_audio_storage_dir()
+    source_part = safe_source_filename(source_id)
+    name_part = safe_source_filename(Path(original_filename).stem)
+    suffix = Path(original_filename).suffix.lower() or ".wav"
+    candidate = storage_dir / f"{source_part}_{name_part}{suffix}"
+    index = 1
+    while candidate.exists():
+        candidate = storage_dir / f"{source_part}_{name_part}_{index}{suffix}"
+        index += 1
+    shutil.move(str(uploaded_path), str(candidate))
+    return ensure_path_inside_dir(
+        candidate,
+        storage_dir,
+        stage="upload_audio",
+        code="invalid_audio_storage_path",
+        message="stored audio path is outside storage directory",
+    )
+
+
+def convert_audio_to_wav_if_needed(audio_path: Path) -> Path:
+    suffix = audio_path.suffix.lower()
+    supported = {".wav", ".mp3", ".m4a", ".webm", ".opus", ".ogg", ".flac", ".mp4"}
+    if suffix not in supported:
+        raise ServiceError(
+            stage="upload_audio",
+            code="unsupported_audio_format",
+            message=f"unsupported audio format: {suffix}",
+            status_code=400,
+        )
+    return audio_path
+
+
+@app.post("/api/upload-and-transcribe", response_model=UploadTranscribeResponse)
+async def upload_and_transcribe_audio(
+    file: UploadFile = File(...),
+    source_id: str = Form("audio_upload"),
+    language: str | None = Form(None),
+    speakers: int | None = Form(None),
+):
+    if not file.filename:
+        raise ServiceError(
+            stage="upload_audio",
+            code="missing_filename",
+            message="uploaded file must have a filename",
+            status_code=400,
+        )
+
+    original_filename = file.filename
+    content = await file.read()
+    if len(content) == 0:
+        raise ServiceError(
+            stage="upload_audio",
+            code="empty_file",
+            message="uploaded file is empty",
+            status_code=400,
+        )
+
+    with tempfile.NamedTemporaryFile(
+        prefix="audio_upload_",
+        suffix=Path(original_filename).suffix.lower() or ".wav",
+        delete=False,
+    ) as tmp:
+        tmp.write(content)
+        tmp_path = Path(tmp.name)
+
+    try:
+        stored_audio = store_uploaded_audio(tmp_path, source_id, original_filename)
+    except Exception:
+        tmp_path.unlink(missing_ok=True)
+        raise
+
+    convert_audio_to_wav_if_needed(stored_audio)
+
+    transcribe_payload = TranscribeAudioRequest(
+        source_id=source_id,
+        audio_file_path=str(stored_audio),
+        video_id=None,
+        language=language,
+        speakers=speakers,
+    )
+    result = execute_transcribe_audio(transcribe_payload)
+
+    rag_text = build_rag_text(
+        source_id=source_id,
+        video_id=None,
+        language=result.language,
+        speaker_roles=result.speaker_roles,
+        segments=[seg.model_dump() for seg in result.segments],
+        source_type="audio_upload",
+        filename=original_filename,
+    )
+
+    return UploadTranscribeResponse(
+        source_id=source_id,
+        filename=original_filename,
+        audio_file_path=str(stored_audio),
+        provider=result.provider,
+        model=result.model,
+        language=result.language,
+        full_text_raw=result.full_text_raw,
+        full_text_rag=rag_text,
+        speaker_roles=result.speaker_roles,
+        segments=result.segments,
+        metadata={**result.metadata, "original_filename": original_filename},
+    )

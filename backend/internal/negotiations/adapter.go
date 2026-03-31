@@ -3,6 +3,7 @@ package negotiations
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"tg-rag-ingestor/backend/internal/model"
 )
@@ -20,6 +21,7 @@ type negotiationItemDTO struct {
 	ID        string `json:"id"`
 	UpdatedAt string `json:"updated_at"`
 	CreatedAt string `json:"created_at"`
+	Message   string `json:"message"`
 	Resume    struct {
 		ID           string `json:"id"`
 		URL          string `json:"url"`
@@ -74,10 +76,12 @@ func mapNegotiationCandidate(raw json.RawMessage) (*model.NegotiationCandidate, 
 	}
 
 	return &model.NegotiationCandidate{
-		CandidateID: candidateID,
-		ResumeID:    resumeID,
-		ResumeURL:   dto.Resume.AlternateURL,
-		FIO:         fio,
-		UpdatedAt:   updatedAt,
+		CandidateID:   candidateID,
+		NegotiationID: dto.ID,
+		ResumeID:      resumeID,
+		ResumeURL:     dto.Resume.AlternateURL,
+		FIO:           fio,
+		UpdatedAt:     updatedAt,
+		CoverLetter:   strings.TrimSpace(dto.Message),
 	}, nil
 }

@@ -305,6 +305,64 @@ func (h *Handler) TranscribeYouTubeAudio(w http.ResponseWriter, r *http.Request)
 	})
 }
 
+func (h *Handler) UploadAndTranscribeAudio(w http.ResponseWriter, r *http.Request) {
+	const maxUploadBytes = int64(500 << 20) // 500MB
+
+	if err := r.ParseMultipartForm(maxUploadBytes); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_multipart", err.Error())
+		return
+	}
+
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "missing_file", "file field is required")
+		return
+	}
+	defer file.Close()
+
+	fileData, err := io.ReadAll(file)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "read_file_failed", err.Error())
+		return
+	}
+	if len(fileData) == 0 {
+		writeError(w, http.StatusBadRequest, "empty_file", "uploaded file is empty")
+		return
+	}
+
+	title := strings.TrimSpace(r.FormValue("title"))
+	language := strings.TrimSpace(r.FormValue("language"))
+	speakersStr := strings.TrimSpace(r.FormValue("speakers"))
+
+	input := youtube.UploadAudioInput{
+		FileName: header.Filename,
+		FileData: fileData,
+	}
+	if title != "" {
+		input.Title = &title
+	}
+	if language != "" {
+		input.Language = &language
+	}
+	if speakersStr != "" {
+		if v, parseErr := strconv.Atoi(speakersStr); parseErr == nil && v >= 1 && v <= 20 {
+			input.Speakers = &v
+		}
+	}
+
+	result, err := h.youtubeService.UploadAndTranscribeAudio(r.Context(), input)
+	if err != nil {
+		if providerErr, ok := youtube.IsProviderError(err); ok && providerErr != nil {
+			writeError(w, providerErr.StatusCode, providerErr.Code, providerErr.Message)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "transcription_failed", err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, result)
+}
+
 func (h *Handler) ImportJSONFile(w http.ResponseWriter, r *http.Request) {
 	const maxUploadBytes = int64(100 << 20) // 100MB
 
@@ -589,21 +647,21 @@ func (h *Handler) DownloadDocument(w http.ResponseWriter, r *http.Request) {
 	case "txt":
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s.txt"`, filename))
+		_, _ = io.WriteString(w, doc.TextClean)
+	case "chunks":
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s_chunks.txt"`, filename))
 		var builder strings.Builder
-		builder.WriteString(doc.TextClean)
-		if len(chunks) > 0 {
-			builder.WriteString("\n\n--- Chunks ---\n")
-			for _, chunk := range chunks {
-				builder.WriteString("\n[Chunk ")
-				builder.WriteString(strconv.Itoa(chunk.ChunkIndex))
-				builder.WriteString("]\n")
-				builder.WriteString(chunk.Text)
-				builder.WriteString("\n")
-			}
+		for _, chunk := range chunks {
+			builder.WriteString("[Chunk ")
+			builder.WriteString(strconv.Itoa(chunk.ChunkIndex))
+			builder.WriteString("]\n")
+			builder.WriteString(chunk.Text)
+			builder.WriteString("\n\n")
 		}
 		_, _ = io.WriteString(w, builder.String())
 	default:
-		writeError(w, http.StatusBadRequest, "invalid_format", "supported formats: txt, json")
+		writeError(w, http.StatusBadRequest, "invalid_format", "supported formats: txt, chunks, json")
 	}
 }
 

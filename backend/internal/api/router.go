@@ -54,6 +54,7 @@ func NewRouter(
 		r.Get("/youtube/sources/{id}/audio", h.GetYouTubeSourceAudio)
 		r.Post("/youtube/sources/{id}/download-audio", h.DownloadYouTubeAudio)
 		r.Post("/youtube/sources/{id}/transcribe-audio", h.TranscribeYouTubeAudio)
+		r.Post("/audio/upload-and-transcribe", h.UploadAndTranscribeAudio)
 		r.Post("/posts/parsed", h.ListParsedPosts)
 		r.Get("/documents/{id}", h.GetDocument)
 		r.Get("/documents/{id}/download", h.DownloadDocument)

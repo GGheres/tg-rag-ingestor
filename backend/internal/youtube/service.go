@@ -17,8 +17,10 @@ import (
 )
 
 const (
-	YouTubeSourceType = "youtube_video"
-	YouTubeProvider   = "yt_dlp"
+	YouTubeSourceType   = "youtube_video"
+	YouTubeProvider     = "yt_dlp"
+	AudioUploadType     = "audio_upload"
+	AudioUploadProvider = "deepgram"
 )
 
 type Service struct {
@@ -478,6 +480,133 @@ func (s *Service) runTranscriptionForStoredAudio(ctx context.Context, input tran
 		return models.YouTubeAudioArtifact{}, err
 	}
 	return artifact, nil
+}
+
+type UploadAudioInput struct {
+	FileName string
+	FileData []byte
+	Title    *string
+	Language *string
+	Speakers *int
+}
+
+type UploadAudioResult struct {
+	Source       models.Source               `json:"source"`
+	Artifact     models.YouTubeAudioArtifact `json:"artifact"`
+	DocumentID   string                      `json:"document_id"`
+	ChunkCount   int                         `json:"chunk_count"`
+	SpeakerRoles map[string]string           `json:"speaker_roles"`
+}
+
+func (s *Service) UploadAndTranscribeAudio(ctx context.Context, input UploadAudioInput) (UploadAudioResult, error) {
+	if s.provider == nil {
+		return UploadAudioResult{}, fmt.Errorf("audio provider is not configured")
+	}
+
+	title := sanitizeOptionalTitle(input.Title)
+	if title == nil {
+		t := strings.TrimSpace(input.FileName)
+		title = &t
+	}
+
+	provider := AudioUploadProvider
+	uniqueID := fmt.Sprintf("%d", time.Now().UnixNano())
+	source, err := s.repo.CreateSource(ctx, storage.CreateSourceInput{
+		SourceType: AudioUploadType,
+		Provider:   &provider,
+		ExternalID: &uniqueID,
+		Title:      title,
+		URL:        fmt.Sprintf("upload://%s/%s", uniqueID, strings.TrimSpace(input.FileName)),
+	})
+	if err != nil {
+		return UploadAudioResult{}, fmt.Errorf("create audio upload source: %w", err)
+	}
+
+	if err := s.repo.UpdateSourceStatus(ctx, source.ID, "running", nil); err != nil {
+		return UploadAudioResult{}, err
+	}
+
+	transcribeResult, err := s.provider.UploadAndTranscribeAudio(ctx, UploadAndTranscribeRequest{
+		SourceID: source.ID,
+		FileName: input.FileName,
+		FileData: input.FileData,
+		Language: input.Language,
+		Speakers: input.Speakers,
+	})
+	if err != nil {
+		errorText := err.Error()
+		_ = s.repo.UpdateSourceStatus(ctx, source.ID, "error", &errorText)
+		return UploadAudioResult{}, err
+	}
+
+	audioPath := transcribeResult.AudioPath
+	rawJSON := map[string]any{
+		"filename":               transcribeResult.FileName,
+		"audio_file_path":        audioPath,
+		"transcription_metadata": transcribeResult.Metadata,
+		"speaker_roles":          transcribeResult.SpeakerRoles,
+		"segments":               transcribeResult.Segments,
+		"full_text_raw":          transcribeResult.FullTextRaw,
+		"full_text_rag":          transcribeResult.FullTextRAG,
+	}
+
+	artifact, err := s.repo.SaveYouTubeAudioArtifact(ctx, storage.SaveYouTubeAudioArtifactInput{
+		SourceID:      source.ID,
+		Provider:      AudioUploadProvider,
+		VideoID:       source.ID,
+		AudioFilePath: &audioPath,
+		AudioStatus:   "transcribed",
+		RawJSON:       rawJSON,
+	})
+	if err != nil {
+		errorText := err.Error()
+		_ = s.repo.UpdateSourceStatus(ctx, source.ID, "error", &errorText)
+		return UploadAudioResult{}, err
+	}
+
+	transcript := TranscribeAudioResult{
+		SourceID:     transcribeResult.SourceID,
+		Provider:     transcribeResult.Provider,
+		Model:        transcribeResult.Model,
+		Language:     transcribeResult.Language,
+		FullTextRaw:  transcribeResult.FullTextRaw,
+		FullTextRAG:  transcribeResult.FullTextRAG,
+		SpeakerRoles: transcribeResult.SpeakerRoles,
+		Segments:     transcribeResult.Segments,
+		Metadata:     transcribeResult.Metadata,
+	}
+
+	document, chunkCount, err := s.saveTranscriptDocument(ctx, source, source.ID, title, transcript)
+	if err != nil {
+		errorText := err.Error()
+		_ = s.repo.UpdateSourceStatus(ctx, source.ID, "error", &errorText)
+		return UploadAudioResult{}, err
+	}
+
+	rawJSON["document_id"] = document.ID
+	rawJSON["chunk_count"] = chunkCount
+	artifact, _ = s.repo.SaveYouTubeAudioArtifact(ctx, storage.SaveYouTubeAudioArtifactInput{
+		SourceID:      source.ID,
+		Provider:      AudioUploadProvider,
+		VideoID:       source.ID,
+		AudioFilePath: &audioPath,
+		AudioStatus:   "transcribed",
+		RawJSON:       rawJSON,
+	})
+
+	if err := s.repo.UpdateSourceStatus(ctx, source.ID, "active", nil); err != nil {
+		return UploadAudioResult{}, err
+	}
+
+	updatedSource, _ := s.repo.GetSource(ctx, source.ID)
+
+	return UploadAudioResult{
+		Source:       updatedSource,
+		Artifact:     artifact,
+		DocumentID:   document.ID,
+		ChunkCount:   chunkCount,
+		SpeakerRoles: transcribeResult.SpeakerRoles,
+	}, nil
 }
 
 func (s *Service) saveTranscriptDocument(

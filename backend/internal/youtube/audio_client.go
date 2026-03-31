@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"strings"
 	"time"
@@ -139,6 +140,118 @@ func (c *AudioClient) DownloadYouTubeAudio(ctx context.Context, req DownloadAudi
 		Title:         providerResp.Title,
 		AudioFilePath: providerResp.AudioFilePath,
 		Metadata:      providerResp.Metadata,
+	}, nil
+}
+
+type uploadTranscribeResponse struct {
+	SourceID     string                      `json:"source_id"`
+	FileName     string                      `json:"filename"`
+	AudioPath    string                      `json:"audio_file_path"`
+	Provider     string                      `json:"provider"`
+	Model        string                      `json:"model"`
+	Language     *string                     `json:"language"`
+	FullTextRaw  string                      `json:"full_text_raw"`
+	FullTextRAG  string                      `json:"full_text_rag"`
+	SpeakerRoles map[string]string           `json:"speaker_roles"`
+	Segments     []transcribeSegmentResponse `json:"segments"`
+	Metadata     map[string]any              `json:"metadata"`
+}
+
+func (c *AudioClient) UploadAndTranscribeAudio(ctx context.Context, req UploadAndTranscribeRequest) (UploadAndTranscribeResult, error) {
+	if c.baseURL == "" {
+		return UploadAndTranscribeResult{}, fmt.Errorf("python audio service url is empty")
+	}
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+
+	part, err := writer.CreateFormFile("file", req.FileName)
+	if err != nil {
+		return UploadAndTranscribeResult{}, fmt.Errorf("create form file: %w", err)
+	}
+	if _, err := part.Write(req.FileData); err != nil {
+		return UploadAndTranscribeResult{}, fmt.Errorf("write file data: %w", err)
+	}
+
+	if req.SourceID != "" {
+		_ = writer.WriteField("source_id", req.SourceID)
+	}
+	if req.Language != nil && strings.TrimSpace(*req.Language) != "" {
+		_ = writer.WriteField("language", strings.TrimSpace(*req.Language))
+	}
+	if req.Speakers != nil && *req.Speakers >= 1 {
+		_ = writer.WriteField("speakers", fmt.Sprintf("%d", *req.Speakers))
+	}
+
+	if err := writer.Close(); err != nil {
+		return UploadAndTranscribeResult{}, fmt.Errorf("close multipart writer: %w", err)
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/api/upload-and-transcribe", &body)
+	if err != nil {
+		return UploadAndTranscribeResult{}, err
+	}
+	httpReq.Header.Set("Content-Type", writer.FormDataContentType())
+
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return UploadAndTranscribeResult{}, fmt.Errorf("call python upload-and-transcribe service: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return UploadAndTranscribeResult{}, err
+	}
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		providerErr := &ProviderError{
+			StatusCode: resp.StatusCode,
+			Message:    strings.TrimSpace(string(respBody)),
+		}
+		var envelope providerErrorEnvelope
+		if err := json.Unmarshal(respBody, &envelope); err == nil && envelope.Error != nil {
+			providerErr.Code = envelope.Error.Code
+			providerErr.Stage = envelope.Error.Stage
+			providerErr.Message = envelope.Error.Message
+			providerErr.Details = envelope.Error.Details
+		}
+		if providerErr.Message == "" {
+			providerErr.Message = fmt.Sprintf("python upload-and-transcribe service returned %d", resp.StatusCode)
+		}
+		return UploadAndTranscribeResult{}, providerErr
+	}
+
+	var providerResp uploadTranscribeResponse
+	if err := json.Unmarshal(respBody, &providerResp); err != nil {
+		return UploadAndTranscribeResult{}, fmt.Errorf("decode python upload-and-transcribe response: %w", err)
+	}
+
+	segments := make([]TranscribeSegment, 0, len(providerResp.Segments))
+	for _, item := range providerResp.Segments {
+		segments = append(segments, TranscribeSegment{
+			SegmentIndex: item.SegmentIndex,
+			StartSeconds: item.StartSeconds,
+			EndSeconds:   item.EndSeconds,
+			SpeakerLabel: item.SpeakerLabel,
+			RoleLabel:    item.RoleLabel,
+			TextRaw:      item.TextRaw,
+			Confidence:   item.Confidence,
+		})
+	}
+
+	return UploadAndTranscribeResult{
+		SourceID:     providerResp.SourceID,
+		FileName:     providerResp.FileName,
+		AudioPath:    providerResp.AudioPath,
+		Provider:     providerResp.Provider,
+		Model:        providerResp.Model,
+		Language:     providerResp.Language,
+		FullTextRaw:  providerResp.FullTextRaw,
+		FullTextRAG:  providerResp.FullTextRAG,
+		SpeakerRoles: providerResp.SpeakerRoles,
+		Segments:     segments,
+		Metadata:     providerResp.Metadata,
 	}, nil
 }
 

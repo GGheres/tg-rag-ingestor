@@ -215,12 +215,35 @@ export function exportDownloadURL(exportID: string) {
   return `${API_URL}/api/exports/${exportID}/download`;
 }
 
-export function documentDownloadURL(id: string, format: "txt" | "json" = "txt") {
+export function documentDownloadURL(id: string, format: "txt" | "chunks" | "json" = "txt") {
   return `${API_URL}/api/documents/${id}/download?format=${format}`;
 }
 
 export function youTubeAudioDownloadURL(audioFilePath: string) {
   return `${PY_SERVICE_URL}/api/download-youtube-audio-file?path=${encodeURIComponent(audioFilePath)}`;
+}
+
+export function uploadAndTranscribeAudio(payload: {
+  file: File;
+  title?: string;
+  language?: string;
+  speakers?: number;
+}) {
+  const formData = new FormData();
+  formData.set("file", payload.file);
+  if (payload.title) formData.set("title", payload.title);
+  if (payload.language) formData.set("language", payload.language);
+  if (payload.speakers && payload.speakers >= 1) formData.set("speakers", String(payload.speakers));
+  return request<{
+    source: Source;
+    artifact: unknown;
+    document_id: string;
+    chunk_count: number;
+    speaker_roles: Record<string, string>;
+  }>("/api/audio/upload-and-transcribe", {
+    method: "POST",
+    body: formData,
+  });
 }
 
 export function getHHConfig() {
