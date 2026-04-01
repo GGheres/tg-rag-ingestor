@@ -23,9 +23,22 @@ func New(client *hhclient.Client, logger *slog.Logger) *Service {
 	}
 }
 
-func (s *Service) FetchFull(ctx context.Context, resumeID string) (*model.Resume, error) {
+func (s *Service) FetchFull(ctx context.Context, candidate model.NegotiationCandidate) (*model.Resume, error) {
 	var resume model.Resume
-	status, err := s.client.GetJSON(ctx, "/resumes/"+resumeID, nil, &resume)
+
+	resumeID := strings.TrimSpace(candidate.ResumeID)
+	target := strings.TrimSpace(candidate.ResumeAPIURL)
+
+	var status int
+	var err error
+	switch {
+	case strings.HasPrefix(target, "http://") || strings.HasPrefix(target, "https://"):
+		status, err = s.client.GetJSONURL(ctx, target, nil, &resume)
+	case strings.HasPrefix(target, "/"):
+		status, err = s.client.GetJSON(ctx, target, nil, &resume)
+	default:
+		status, err = s.client.GetJSON(ctx, "/resumes/"+resumeID, nil, &resume)
+	}
 	if err != nil {
 		if apiErr, ok := err.(*hhclient.APIError); ok {
 			switch apiErr.Type {

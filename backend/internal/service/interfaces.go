@@ -8,10 +8,11 @@ import (
 
 type NegotiationsFetcher interface {
 	FetchByVacancy(ctx context.Context, vacancyID string) ([]model.NegotiationCandidate, error)
+	FetchCoverLetter(ctx context.Context, candidate model.NegotiationCandidate) (string, error)
 }
 
 type ResumeProvider interface {
-	FetchFull(ctx context.Context, resumeID string) (*model.Resume, error)
+	FetchFull(ctx context.Context, candidate model.NegotiationCandidate) (*model.Resume, error)
 	DownloadOriginal(ctx context.Context, fs model.FileSystem, outputDir string, resume *model.Resume) (string, bool, error)
 }
 

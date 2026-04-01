@@ -92,6 +92,7 @@ export default function HHResumesPage() {
     dryRun: false,
     exportPDF: false,
     saveOriginals: true,
+    coverLetterOnly: false,
   });
   const [oauthCode, setOauthCode] = useState("");
 
@@ -177,6 +178,7 @@ export default function HHResumesPage() {
         dry_run: form.dryRun,
         export_pdf: form.exportPDF,
         save_originals: form.saveOriginals,
+        cover_letter_only: form.coverLetterOnly,
       });
       setForm((prev) => ({ ...prev, vacancyID: "" }));
       await loadConfigAndExtractions();
@@ -393,6 +395,14 @@ expires_in=${oauthResult.expires_in}`}
               onChange={(e) => setForm((prev) => ({ ...prev, saveOriginals: e.target.checked }))}
             />
             Save original PDFs/RTF
+          </label>
+          <label className="checkbox-label">
+            <input
+              type="checkbox"
+              checked={form.coverLetterOnly}
+              onChange={(e) => setForm((prev) => ({ ...prev, coverLetterOnly: e.target.checked }))}
+            />
+            Только с сопроводительным письмом
           </label>
           <button className="btn primary" type="submit" disabled={submitting}>
             {submitting ? "Starting..." : "Start extraction"}

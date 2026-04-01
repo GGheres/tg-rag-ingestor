@@ -115,7 +115,8 @@ func (h *Handler) HHStartExtraction(w http.ResponseWriter, r *http.Request) {
 		ManagerAccountID string `json:"manager_account_id"`
 		DryRun           bool   `json:"dry_run"`
 		ExportPDF        bool   `json:"export_pdf"`
-		SaveOriginals    bool   `json:"save_originals"`
+		SaveOriginals    *bool  `json:"save_originals"`
+		CoverLetterOnly  bool   `json:"cover_letter_only"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
@@ -133,6 +134,7 @@ func (h *Handler) HHStartExtraction(w http.ResponseWriter, r *http.Request) {
 	extractionID := fmt.Sprintf("%s_%d", strings.TrimSpace(req.VacancyID), time.Now().Unix())
 	outputDir := filepath.Join(h.hhConfig.OutputDir, extractionID)
 	svc := h.newHHService(req.ManagerAccountID)
+	saveOriginals := resolveOptionalBool(req.SaveOriginals, h.hhConfig.SaveOriginalsDefault)
 
 	go func() {
 		request := model.ExtractionRequest{
@@ -140,7 +142,8 @@ func (h *Handler) HHStartExtraction(w http.ResponseWriter, r *http.Request) {
 			ManagerAccountID: strings.TrimSpace(req.ManagerAccountID),
 			DryRun:           req.DryRun,
 			ExportPDF:        req.ExportPDF,
-			SaveOriginals:    req.SaveOriginals,
+			SaveOriginals:    saveOriginals,
+			CoverLetterOnly:  req.CoverLetterOnly,
 			OutputDir:        outputDir,
 		}
 		if _, _, err := svc.Run(context.Background(), request); err != nil {
@@ -308,4 +311,11 @@ func (h *Handler) HHDownloadFile(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.ServeContent(w, r, filename, stat.ModTime(), f)
+}
+
+func resolveOptionalBool(value *bool, fallback bool) bool {
+	if value == nil {
+		return fallback
+	}
+	return *value
 }

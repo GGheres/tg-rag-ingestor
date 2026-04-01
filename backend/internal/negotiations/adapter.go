@@ -18,11 +18,13 @@ type negotiationsPage struct {
 }
 
 type negotiationItemDTO struct {
-	ID        string `json:"id"`
-	UpdatedAt string `json:"updated_at"`
-	CreatedAt string `json:"created_at"`
-	Message   string `json:"message"`
-	Resume    struct {
+	ID          string      `json:"id"`
+	UpdatedAt   string      `json:"updated_at"`
+	CreatedAt   string      `json:"created_at"`
+	Message     string      `json:"message"`
+	MessagesURL string      `json:"messages_url"`
+	ChatID      json.Number `json:"chat_id"`
+	Resume      struct {
 		ID           string `json:"id"`
 		URL          string `json:"url"`
 		AlternateURL string `json:"alternate_url"`
@@ -37,6 +39,38 @@ type negotiationItemDTO struct {
 		MiddleName string `json:"middle_name"`
 		Name       string `json:"name"`
 	} `json:"applicant"`
+}
+
+type messagesResponse struct {
+	Items []messageItemDTO `json:"items"`
+}
+
+type messageItemDTO struct {
+	Text   string `json:"text"`
+	Author struct {
+		ParticipantType string `json:"participant_type"`
+	} `json:"author"`
+}
+
+type chatMessagesResponse struct {
+	Messages []chatMessageItemDTO `json:"messages"`
+	Items    []chatMessageItemDTO `json:"items"`
+}
+
+type chatMessageItemDTO struct {
+	Payload struct {
+		Text string `json:"text"`
+	} `json:"payload"`
+	SenderDisplayInfo struct {
+		Role string `json:"role"`
+	} `json:"sender_display_info"`
+}
+
+func (r chatMessagesResponse) list() []chatMessageItemDTO {
+	if len(r.Messages) > 0 {
+		return r.Messages
+	}
+	return r.Items
 }
 
 // ADAPT_TO_REAL_API_RESPONSE
@@ -79,9 +113,11 @@ func mapNegotiationCandidate(raw json.RawMessage) (*model.NegotiationCandidate, 
 		CandidateID:   candidateID,
 		NegotiationID: dto.ID,
 		ResumeID:      resumeID,
-		ResumeURL:     dto.Resume.AlternateURL,
+		ResumeAPIURL:  strings.TrimSpace(dto.Resume.URL),
 		FIO:           fio,
 		UpdatedAt:     updatedAt,
 		CoverLetter:   strings.TrimSpace(dto.Message),
+		MessagesURL:   dto.MessagesURL,
+		ChatID:        strings.TrimSpace(dto.ChatID.String()),
 	}, nil
 }

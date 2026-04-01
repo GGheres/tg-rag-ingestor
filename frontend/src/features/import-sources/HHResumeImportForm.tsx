@@ -87,6 +87,7 @@ export default function HHResumeImportForm({ onResult }: Props) {
     dryRun: false,
     exportPDF: false,
     saveOriginals: true,
+    coverLetterOnly: false,
   });
   const [oauthCode, setOauthCode] = useState("");
   const [showReauth, setShowReauth] = useState(false);
@@ -162,6 +163,7 @@ export default function HHResumeImportForm({ onResult }: Props) {
         dry_run: form.dryRun,
         export_pdf: form.exportPDF,
         save_originals: form.saveOriginals,
+        cover_letter_only: form.coverLetterOnly,
       });
 
       onResult({
@@ -419,6 +421,16 @@ export default function HHResumeImportForm({ onResult }: Props) {
                 }
               />
               Save original PDFs/RTF
+            </label>
+            <label className="checkbox-label">
+              <input
+                type="checkbox"
+                checked={form.coverLetterOnly}
+                onChange={(e) =>
+                  setForm((prev) => ({ ...prev, coverLetterOnly: e.target.checked }))
+                }
+              />
+              Только с сопроводительным письмом
             </label>
           </div>
 

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/url"
 	"strconv"
+	"strings"
 
 	"tg-rag-ingestor/backend/internal/hhclient"
 	"tg-rag-ingestor/backend/internal/model"
@@ -101,6 +102,89 @@ func (s *Service) fetchNegotiationsPage(ctx context.Context, vacancyID string, p
 		return nil, fmt.Errorf("fetch negotiations page %d failed: status=%d err=%w", page, status, err)
 	}
 	return &parsed, nil
+}
+
+// FetchCoverLetter fetches the applicant's initial cover letter.
+// HH deprecated the old negotiation messages API in favor of chats, so prefer chat_id when available.
+func (s *Service) FetchCoverLetter(ctx context.Context, candidate model.NegotiationCandidate) (string, error) {
+	if chatID := strings.TrimSpace(candidate.ChatID); chatID != "" {
+		text, err := s.fetchChatCoverLetter(ctx, chatID)
+		if err == nil {
+			return text, nil
+		}
+		s.logger.Warn("failed to fetch cover letter via chat api, falling back to legacy messages",
+			"negotiation_id", candidate.NegotiationID,
+			"chat_id", chatID,
+			"error", err,
+		)
+	}
+	return s.fetchLegacyCoverLetter(ctx, candidate.NegotiationID, candidate.MessagesURL)
+}
+
+func (s *Service) fetchChatCoverLetter(ctx context.Context, chatID string) (string, error) {
+	q := url.Values{}
+	q.Set("order", "next")
+	q.Set("limit", "50")
+
+	var msgs chatMessagesResponse
+	status, err := s.client.GetJSON(ctx, "/common/chats/"+chatID+"/messages", q, &msgs)
+	if err != nil {
+		return "", fmt.Errorf("fetch chat messages: status=%d err=%w", status, err)
+	}
+	return extractInitialApplicantChatMessage(msgs.list()), nil
+}
+
+func (s *Service) fetchLegacyCoverLetter(ctx context.Context, negotiationID, messagesURL string) (string, error) {
+	target := strings.TrimSpace(messagesURL)
+	if target == "" {
+		target = "/negotiations/" + negotiationID + "/messages"
+	}
+
+	q := url.Values{}
+	q.Set("with_text_only", "true")
+	q.Set("per_page", "20")
+	q.Set("page", "0")
+
+	var msgs messagesResponse
+	var status int
+	var err error
+	if strings.HasPrefix(target, "http://") || strings.HasPrefix(target, "https://") {
+		status, err = s.client.GetJSONURL(ctx, target, q, &msgs)
+	} else {
+		status, err = s.client.GetJSON(ctx, target, q, &msgs)
+	}
+	if err != nil {
+		return "", fmt.Errorf("fetch messages: status=%d err=%w", status, err)
+	}
+	return extractInitialApplicantLegacyMessage(msgs.Items), nil
+}
+
+func extractInitialApplicantChatMessage(items []chatMessageItemDTO) string {
+	for _, msg := range items {
+		text := strings.TrimSpace(msg.Payload.Text)
+		if text == "" {
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(msg.SenderDisplayInfo.Role), "APPLICANT") {
+			return ""
+		}
+		return text
+	}
+	return ""
+}
+
+func extractInitialApplicantLegacyMessage(items []messageItemDTO) string {
+	for _, msg := range items {
+		text := strings.TrimSpace(msg.Text)
+		if text == "" {
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(msg.Author.ParticipantType), "applicant") {
+			return ""
+		}
+		return text
+	}
+	return ""
 }
 
 func (s *Service) fetchCollection(ctx context.Context, collectionURL string, onItems func([]json.RawMessage)) error {

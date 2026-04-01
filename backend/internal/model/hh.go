@@ -110,13 +110,15 @@ type NegotiationCollection struct {
 }
 
 type NegotiationCandidate struct {
-	CandidateID  string
+	CandidateID   string
 	NegotiationID string
-	ResumeID     string
-	ResumeURL    string
-	FIO          string
-	UpdatedAt    string
-	CoverLetter  string
+	ResumeID      string
+	ResumeAPIURL  string
+	FIO           string
+	UpdatedAt     string
+	CoverLetter   string
+	MessagesURL   string
+	ChatID        string
 }
 
 type Resume struct {
@@ -241,6 +243,7 @@ type ExtractionRequest struct {
 	ExportPDF        bool
 	SaveOriginals    bool
 	SaveAsMarkdown   bool
+	CoverLetterOnly  bool
 	OutputDir        string
 }
 

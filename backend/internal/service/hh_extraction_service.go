@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"golang.org/x/sync/errgroup"
@@ -56,7 +57,6 @@ func (s *HHExtractionService) ExchangeCode(ctx context.Context, code string) (*m
 
 func (s *HHExtractionService) Run(ctx context.Context, request model.ExtractionRequest) (*model.RunManifest, []string, error) {
 	request.OutputDir = ensureOutputDir(request.OutputDir, s.cfg.OutputDir)
-	request.SaveOriginals = request.SaveOriginals || s.cfg.SaveOriginalsDefault
 	request.SaveAsMarkdown = true
 
 	if err := s.fs.MkdirAll(request.OutputDir, 0o755); err != nil {
@@ -109,6 +109,61 @@ func (s *HHExtractionService) Run(ctx context.Context, request model.ExtractionR
 		return manifest, files, nil
 	}
 
+	// Phase 1: Fetch cover letters concurrently via messages endpoint.
+	clGroup, clCtx := errgroup.WithContext(ctx)
+	clGroup.SetLimit(s.cfg.Concurrency)
+	for idx := range candidates {
+		idx := idx
+		clGroup.Go(func() error {
+			if candidates[idx].CoverLetter != "" {
+				return nil
+			}
+			cl, err := s.negotiations.FetchCoverLetter(clCtx, candidates[idx])
+			if err != nil {
+				s.logger.Warn("failed to fetch cover letter",
+					"candidate", candidates[idx].FIO,
+					"negotiation_id", candidates[idx].NegotiationID,
+					"error", err,
+				)
+				return nil
+			}
+			candidates[idx].CoverLetter = cl
+			return nil
+		})
+	}
+	_ = clGroup.Wait()
+
+	// Phase 2: Filter by cover letter if requested.
+	if request.CoverLetterOnly {
+		filtered := make([]model.NegotiationCandidate, 0, len(candidates))
+		for _, c := range candidates {
+			if strings.TrimSpace(c.CoverLetter) != "" {
+				filtered = append(filtered, c)
+			} else {
+				manifest.Candidates = append(manifest.Candidates, model.CandidateManifest{
+					CandidateID:  c.CandidateID,
+					ResumeID:     c.ResumeID,
+					FIO:          c.FIO,
+					Status:       "skipped",
+					ErrorMessage: "no cover letter",
+				})
+			}
+		}
+		s.logger.Info("filtered by cover letter", "total", len(candidates), "with_letter", len(filtered))
+		candidates = filtered
+	}
+
+	if len(candidates) == 0 {
+		manifest.Processed = manifest.TotalFound
+		manifest.Failed = len(manifest.Candidates)
+		if _, writeErr := s.exporter.WriteManifest(manifest, request.OutputDir); writeErr != nil {
+			return nil, nil, writeErr
+		}
+		files, _ := export.CollectExtractionFiles(s.fs, request.OutputDir)
+		return manifest, files, nil
+	}
+
+	// Phase 3: Fetch full resumes concurrently.
 	type resumeResult struct {
 		candidate model.NegotiationCandidate
 		resume    *model.Resume
@@ -122,7 +177,7 @@ func (s *HHExtractionService) Run(ctx context.Context, request model.ExtractionR
 		idx := idx
 		candidate := candidate
 		group.Go(func() error {
-			resumeItem, fetchErr := s.resumes.FetchFull(groupCtx, candidate.ResumeID)
+			resumeItem, fetchErr := s.resumes.FetchFull(groupCtx, candidate)
 			resumeResults[idx] = resumeResult{
 				candidate: candidate,
 				resume:    resumeItem,

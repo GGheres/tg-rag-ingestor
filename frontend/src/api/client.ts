@@ -82,6 +82,10 @@ export function createTelegramChannelDocumentSource(payload: { title?: string; u
   });
 }
 
+export function listYouTubeSources() {
+  return request<Source[]>("/api/youtube/sources");
+}
+
 export function createYouTubeSource(payload: { url: string }) {
   return request<Source>("/api/youtube/sources", {
     method: "POST",
@@ -268,6 +272,7 @@ export function startHHExtraction(payload: {
   dry_run?: boolean;
   export_pdf?: boolean;
   save_originals?: boolean;
+  cover_letter_only?: boolean;
 }) {
   return request<{
     extraction_id: string;
