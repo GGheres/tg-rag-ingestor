@@ -72,6 +72,37 @@ services:
       youtube-audio-service:
         condition: service_started
 
+  tg-bot:
+    image: golang:1.25
+    working_dir: /app/backend
+    env_file:
+      - .env
+    environment:
+      POSTGRES_DSN: postgres://postgres:postgres@postgres:5432/tgrag?sslmode=disable
+      REDIS_ADDR: redis:6379
+      QDRANT_URL: http://qdrant:6333
+      PY_YOUTUBE_AUDIO_SERVICE_URL: http://youtube-audio-service:8090
+      GOPROXY: "off"
+      GOSUMDB: "off"
+    command: >
+      sh -lc "/usr/local/go/bin/go run ./cmd/bot"
+    volumes:
+      - ./:/app
+      - ${HOME}:${HOME}:ro
+      - ${HOME}/go/pkg/mod:/go/pkg/mod
+      - ${HOME}/Library/Caches/go-build:/root/.cache/go-build
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      qdrant:
+        condition: service_started
+      youtube-audio-service:
+        condition: service_started
+
   youtube-audio-service:
     build:
       context: .

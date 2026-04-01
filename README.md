@@ -77,6 +77,12 @@ Uses:
 - source details page for Telegram or YouTube audio artifact
 - dedicated `HH Resumes` page for OAuth exchange, extraction launch, manifest preview, and file downloads
 
+### Telegram Bot
+- long polling Telegram bot runtime on Go (`backend/cmd/bot`)
+- menu-driven choice of parsing mode directly inside Telegram
+- supports Telegram channel import, Telegram message links, YouTube, audio upload, JSON import, local folder RAG export, and HH extraction
+- can run sync/export operations and send resulting `.txt` / `.json` / extraction files back to chat
+
 ## Quick Start
 
 ```bash
@@ -89,6 +95,8 @@ Open:
 - api: `http://localhost:18080`
 - api health: `http://localhost:18080/health`
 
+If `TG_BOT_TOKEN` is set, Docker Compose will also start the Telegram bot service (`tg-bot`).
+
 ## Environment Variables
 
 Core:
@@ -97,6 +105,8 @@ Core:
 - `QDRANT_URL`
 - `APP_PORT`
 - `CORS_ALLOWED_ORIGIN`
+- `TG_BOT_TOKEN`
+- `TG_BOT_ALLOWED_USER_IDS` (optional comma-separated Telegram user ids for access control)
 - `MIGRATION_DIR`
 - `EXPORT_DIR`
 - `DEFAULT_SYNC_BATCH_SIZE`
@@ -162,6 +172,10 @@ HeadHunter:
 - `HH_CONCURRENCY` (default `4`)
 - `HH_SAVE_ORIGINALS_DEFAULT` (default `1`)
 
+Telegram bot:
+- `TG_BOT_TOKEN` (required for `backend/cmd/bot`)
+- `TG_BOT_ALLOWED_USER_IDS` (optional, comma-separated allowlist)
+
 Private Telegram message-link ingestion requires:
 - `TELEGRAM_MODE=mtproto`
 - an authorized Telegram session with access to the target private channel
@@ -218,6 +232,35 @@ Behavior:
 - sync fetches only those message IDs instead of the full history,
 - cleaned text from all fetched messages is merged into one RAG document,
 - per-message raw records are still stored separately.
+
+## Telegram Bot
+
+Bot runtime:
+- `go run ./backend/cmd/bot`
+- or `docker compose up -d tg-bot`
+
+Recommended:
+- keep `TG_BOT_ALLOWED_USER_IDS` filled so the bot is not open to any Telegram user
+- store the bot token only in `.env`, not in source files
+
+Supported bot flows:
+- `TG документ`: channel/invite link -> sync whole channel into one document
+- `TG источник`: public channel link/username -> create source + sync
+- `TG ссылки`: import specific Telegram message links
+- `YouTube`: video URL -> audio download + transcription
+- `Аудио файл`: upload file in Telegram -> transcription
+- `JSON файл`: import JSON as file or pasted text
+- `Локальная папка`: build filesystem RAG export from an absolute path
+- `HH резюме`: start extraction by `vacancy_id`
+
+Useful bot commands:
+- `/sources`
+- `/status <source_id>`
+- `/sync <source_id>`
+- `/export <source_id>`
+- `/document <document_id>`
+- `/hh <vacancy_id>`
+- `/cancel`
 
 ## API (YouTube)
 
