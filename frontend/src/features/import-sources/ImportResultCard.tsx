@@ -8,6 +8,7 @@ const METHOD_LABELS: Record<string, string> = {
   "local-folder": "Local Folder",
   json: "JSON",
   "hh-resumes": "HH Resumes",
+  "hh-public-vacancies": "HH Public",
 };
 
 const TELEGRAM_MODE_LABELS: Record<string, string> = {

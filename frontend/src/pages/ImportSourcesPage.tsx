@@ -6,6 +6,7 @@ import AudioUploadImportForm from "../features/import-sources/AudioUploadImportF
 import LocalFolderImportForm from "../features/import-sources/LocalFolderImportForm";
 import JsonImportForm from "../features/import-sources/JsonImportForm";
 import HHResumeImportForm from "../features/import-sources/HHResumeImportForm";
+import HHPublicVacancyImportForm from "../features/import-sources/HHPublicVacancyImportForm";
 import ImportResultsList from "../features/import-sources/ImportResultsList";
 import type { ImportMethod, ImportResult } from "../features/import-sources/types";
 import { MOCK_RESULTS } from "../features/import-sources/types";
@@ -34,6 +35,7 @@ export default function ImportSourcesPage() {
           {activeMethod === "local-folder" && <LocalFolderImportForm onResult={addResult} />}
           {activeMethod === "json" && <JsonImportForm onResult={addResult} />}
           {activeMethod === "hh-resumes" && <HHResumeImportForm onResult={addResult} />}
+          {activeMethod === "hh-public-vacancies" && <HHPublicVacancyImportForm onResult={addResult} />}
         </div>
       </section>
 

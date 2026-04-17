@@ -14,6 +14,9 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"tg-rag-ingestor/backend/internal/export"
+	"tg-rag-ingestor/backend/internal/hhaccess"
+	"tg-rag-ingestor/backend/internal/hhpublic"
+	"tg-rag-ingestor/backend/internal/hhresumesearch"
 	"tg-rag-ingestor/backend/internal/model"
 	hhservice "tg-rag-ingestor/backend/internal/service"
 )
@@ -26,6 +29,18 @@ func (h *Handler) newHHService(managerAccountID string) *hhservice.HHExtractionS
 
 func (h *Handler) newHHVacancyCatalogService() *hhservice.HHVacancyCatalogService {
 	return hhservice.NewHHVacancyCatalogService(h.hhConfig, h.logger)
+}
+
+func (h *Handler) newHHPublicVacancyService() *hhpublic.Service {
+	return hhpublic.New(h.hhConfig, h.ingestionService, h.logger)
+}
+
+func (h *Handler) newHHAccessService() *hhaccess.Service {
+	return hhaccess.New(h.hhConfig, h.logger)
+}
+
+func (h *Handler) newHHResumeSearchService() *hhresumesearch.Service {
+	return hhresumesearch.New(h.hhConfig, h.ingestionService, h.logger)
 }
 
 // HHGetConfig returns current HH configuration status without secrets.
@@ -106,6 +121,165 @@ func (h *Handler) HHListVacancies(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, catalog)
+}
+
+// HHGetAccessStatus returns current employer HH paid-access status, method groups, and resume limits.
+func (h *Handler) HHGetAccessStatus(w http.ResponseWriter, r *http.Request) {
+	if strings.TrimSpace(h.hhConfig.AccessToken) == "" && strings.TrimSpace(h.hhConfig.RefreshToken) == "" {
+		writeError(w, http.StatusBadRequest, "hh_not_configured", "configure HH_ACCESS_TOKEN or HH_REFRESH_TOKEN in .env")
+		return
+	}
+
+	result, err := h.newHHAccessService().GetStatus(r.Context())
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "hh_access_status_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+// HHGetPayableActions returns active paid HH API services for the current employer.
+func (h *Handler) HHGetPayableActions(w http.ResponseWriter, r *http.Request) {
+	if strings.TrimSpace(h.hhConfig.AccessToken) == "" && strings.TrimSpace(h.hhConfig.RefreshToken) == "" {
+		writeError(w, http.StatusBadRequest, "hh_not_configured", "configure HH_ACCESS_TOKEN or HH_REFRESH_TOKEN in .env")
+		return
+	}
+
+	accessSvc := h.newHHAccessService()
+	user, err := accessSvc.GetCurrentUser(r.Context())
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "hh_current_user_failed", err.Error())
+		return
+	}
+	if user.Employer == nil || strings.TrimSpace(user.Employer.ID) == "" {
+		writeError(w, http.StatusBadRequest, "hh_employer_context_missing", "current hh token has no employer context")
+		return
+	}
+	result, err := accessSvc.GetPayableActions(r.Context(), user.Employer.ID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "hh_payable_actions_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+// HHGetMethodAccess returns paid-method access groups for the current employer manager.
+func (h *Handler) HHGetMethodAccess(w http.ResponseWriter, r *http.Request) {
+	if strings.TrimSpace(h.hhConfig.AccessToken) == "" && strings.TrimSpace(h.hhConfig.RefreshToken) == "" {
+		writeError(w, http.StatusBadRequest, "hh_not_configured", "configure HH_ACCESS_TOKEN or HH_REFRESH_TOKEN in .env")
+		return
+	}
+
+	accessSvc := h.newHHAccessService()
+	user, err := accessSvc.GetCurrentUser(r.Context())
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "hh_current_user_failed", err.Error())
+		return
+	}
+	if user.Employer == nil || strings.TrimSpace(user.Employer.ID) == "" || user.Manager == nil || strings.TrimSpace(user.Manager.ID) == "" {
+		writeError(w, http.StatusBadRequest, "hh_manager_context_missing", "current hh token has no employer/manager context")
+		return
+	}
+	result, err := accessSvc.GetMethodAccess(r.Context(), user.Employer.ID, user.Manager.ID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "hh_method_access_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+// HHGetResumeLimits returns the current manager resume-view daily limits.
+func (h *Handler) HHGetResumeLimits(w http.ResponseWriter, r *http.Request) {
+	if strings.TrimSpace(h.hhConfig.AccessToken) == "" && strings.TrimSpace(h.hhConfig.RefreshToken) == "" {
+		writeError(w, http.StatusBadRequest, "hh_not_configured", "configure HH_ACCESS_TOKEN or HH_REFRESH_TOKEN in .env")
+		return
+	}
+
+	accessSvc := h.newHHAccessService()
+	user, err := accessSvc.GetCurrentUser(r.Context())
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "hh_current_user_failed", err.Error())
+		return
+	}
+	if user.Employer == nil || strings.TrimSpace(user.Employer.ID) == "" || user.Manager == nil || strings.TrimSpace(user.Manager.ID) == "" {
+		writeError(w, http.StatusBadRequest, "hh_manager_context_missing", "current hh token has no employer/manager context")
+		return
+	}
+	result, err := accessSvc.GetResumeLimits(r.Context(), user.Employer.ID, user.Manager.ID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "hh_resume_limits_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+// HHImportPublicVacancies imports public HH vacancies into the generic JSON ingestion flow.
+func (h *Handler) HHImportPublicVacancies(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Text             string `json:"text"`
+		Area             string `json:"area"`
+		ProfessionalRole string `json:"professional_role"`
+		DateFrom         string `json:"date_from"`
+		DateTo           string `json:"date_to"`
+		MaxItems         int    `json:"max_items"`
+		SourceName       string `json:"source_name"`
+		Title            string `json:"title"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
+		return
+	}
+
+	result, err := h.newHHPublicVacancyService().Import(r.Context(), hhpublic.ImportRequest{
+		Text:             req.Text,
+		Area:             req.Area,
+		ProfessionalRole: req.ProfessionalRole,
+		DateFrom:         req.DateFrom,
+		DateTo:           req.DateTo,
+		MaxItems:         req.MaxItems,
+		SourceName:       req.SourceName,
+		Title:            req.Title,
+	})
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "hh_public_import_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, result)
+}
+
+// HHImportGlobalResumes imports globally searched HH resumes into the generic JSON ingestion flow.
+func (h *Handler) HHImportGlobalResumes(w http.ResponseWriter, r *http.Request) {
+	if strings.TrimSpace(h.hhConfig.AccessToken) == "" && strings.TrimSpace(h.hhConfig.RefreshToken) == "" {
+		writeError(w, http.StatusBadRequest, "hh_not_configured", "configure HH_ACCESS_TOKEN or HH_REFRESH_TOKEN in .env")
+		return
+	}
+
+	var req struct {
+		Text             string `json:"text"`
+		Area             string `json:"area"`
+		ProfessionalRole string `json:"professional_role"`
+		MaxItems         int    `json:"max_items"`
+		SourceName       string `json:"source_name"`
+		Title            string `json:"title"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
+		return
+	}
+
+	result, err := h.newHHResumeSearchService().Import(r.Context(), hhresumesearch.ImportRequest{
+		Text:             req.Text,
+		Area:             req.Area,
+		ProfessionalRole: req.ProfessionalRole,
+		MaxItems:         req.MaxItems,
+		SourceName:       req.SourceName,
+		Title:            req.Title,
+	})
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "hh_resume_search_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, result)
 }
 
 // HHStartExtraction starts async extraction job for vacancy.

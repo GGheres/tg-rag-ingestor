@@ -67,6 +67,12 @@ func NewRouter(
 		// HeadHunter resume extraction
 		r.Get("/hh/config", h.HHGetConfig)
 		r.Get("/hh/vacancies", h.HHListVacancies)
+		r.Get("/hh/access-status", h.HHGetAccessStatus)
+		r.Get("/hh/payable-actions", h.HHGetPayableActions)
+		r.Get("/hh/method-access", h.HHGetMethodAccess)
+		r.Get("/hh/resume-limits", h.HHGetResumeLimits)
+		r.Post("/hh/public-vacancies/import", h.HHImportPublicVacancies)
+		r.Post("/hh/global-resumes/import", h.HHImportGlobalResumes)
 		r.Post("/hh/oauth/exchange", h.HHExchangeCode)
 		r.Post("/hh/extract", h.HHStartExtraction)
 		r.Get("/hh/extractions", h.HHListExtractions)

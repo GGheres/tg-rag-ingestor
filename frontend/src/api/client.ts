@@ -8,6 +8,7 @@ import type {
   HHExtractionDetails,
   HHExtractionListItem,
   HHOAuthExchangeResponse,
+  HHPublicVacancyImportResponse,
   RawMessage,
   Source,
   SourceStats,
@@ -281,6 +282,23 @@ export function startHHExtraction(payload: {
     status: string;
     output_dir: string;
   }>("/api/hh/extract", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export function importHHPublicVacancies(payload: {
+  text?: string;
+  area?: string;
+  professional_role?: string;
+  date_from?: string;
+  date_to?: string;
+  max_items?: number;
+  source_name?: string;
+  title?: string;
+}) {
+  return request<HHPublicVacancyImportResponse>("/api/hh/public-vacancies/import", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),

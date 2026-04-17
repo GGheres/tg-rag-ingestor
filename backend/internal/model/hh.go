@@ -239,6 +239,8 @@ type RunManifest struct {
 type ExtractionRequest struct {
 	VacancyID        string
 	ManagerAccountID string
+	DateFrom         string
+	DateTo           string
 	DryRun           bool
 	ExportPDF        bool
 	SaveOriginals    bool

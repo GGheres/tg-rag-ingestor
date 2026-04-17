@@ -74,6 +74,28 @@ func (s *HHExtractionService) Run(ctx context.Context, request model.ExtractionR
 		return nil, nil, fmt.Errorf("fetch negotiations failed: %w", err)
 	}
 
+	if request.DateFrom != "" || request.DateTo != "" {
+		filtered := make([]model.NegotiationCandidate, 0, len(candidates))
+		for _, c := range candidates {
+			datePart := c.UpdatedAt
+			if len(datePart) >= 10 {
+				datePart = datePart[:10]
+			}
+			match := true
+			if request.DateFrom != "" && datePart < request.DateFrom {
+				match = false
+			}
+			if request.DateTo != "" && datePart > request.DateTo {
+				match = false
+			}
+			if match {
+				filtered = append(filtered, c)
+			}
+		}
+		s.logger.Info("filtered negotiations by date", "total", len(candidates), "filtered", len(filtered), "date_from", request.DateFrom, "date_to", request.DateTo)
+		candidates = filtered
+	}
+
 	manifest := &model.RunManifest{
 		VacancyID:  request.VacancyID,
 		Provider:   hhProvider,

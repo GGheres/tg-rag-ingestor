@@ -1,4 +1,11 @@
-export type ImportMethod = "telegram" | "youtube" | "audio-upload" | "local-folder" | "json" | "hh-resumes";
+export type ImportMethod =
+  | "telegram"
+  | "youtube"
+  | "audio-upload"
+  | "local-folder"
+  | "json"
+  | "hh-resumes"
+  | "hh-public-vacancies";
 
 export type TelegramMode = "channel-document" | "regular-source" | "message-links";
 
@@ -70,6 +77,12 @@ export const IMPORT_METHODS: ImportMethodOption[] = [
     label: "HH Resumes",
     icon: "\uD83C\uDFAF",
     description: "Extract resumes from HeadHunter vacancies",
+  },
+  {
+    id: "hh-public-vacancies",
+    label: "HH Public",
+    icon: "\uD83D\uDD0D",
+    description: "Import public HeadHunter vacancies into RAG",
   },
 ];
 

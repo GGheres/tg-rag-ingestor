@@ -218,3 +218,32 @@ export type HHExtractionDetails = {
   files?: string[];
   manifest?: HHRunManifest;
 };
+
+export type HHPublicVacancyImportResponse = {
+  source: Source;
+  imported_count: number;
+  processed_count: number;
+  duplicate_count: number;
+  trash_count: number;
+  chunk_count: number;
+  generated_title: string;
+  generated_source_name: string;
+  search_url: string;
+  search_window: {
+    date_from: string;
+    date_to: string;
+  };
+  filters: {
+    text?: string;
+    area?: string;
+    professional_role?: string;
+  };
+  raw_payload_size: number;
+  fetch_stats: {
+    windows_visited: number;
+    requests_made: number;
+    vacancies_fetched: number;
+    truncated_windows: number;
+    reached_max_items: boolean;
+  };
+};
