@@ -1,0 +1,17 @@
+.git
+.gitignore
+.env
+.env.*
+!.env.example
+.DS_Store
+AGENT.md
+SKILL.md
+backend/data
+data
+frontend/node_modules
+frontend/dist
+services/youtube_audio_service/.venv
+services/youtube_audio_service/.venv310
+services/youtube_audio_service/__pycache__
+services/youtube_audio_service/.pytest_cache
+tools/whisper.cpp

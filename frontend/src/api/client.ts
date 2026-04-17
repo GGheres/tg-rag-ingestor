@@ -16,8 +16,8 @@ import type {
   YouTubeAudioDetails,
 } from "../types";
 
-const API_URL = "http://localhost:18080";
-const PY_SERVICE_URL = "http://localhost:8090";
+const API_URL = normalizeBaseURL(import.meta.env.VITE_API_URL);
+const PY_SERVICE_URL = normalizeBaseURL(import.meta.env.VITE_PY_SERVICE_URL);
 
 type APIError = {
   error?: {
@@ -27,8 +27,22 @@ type APIError = {
   };
 };
 
+function normalizeBaseURL(value?: string): string {
+  if (!value) {
+    return "";
+  }
+  return value.replace(/\/+$/, "");
+}
+
+function buildURL(baseURL: string, path: string): string {
+  if (!path.startsWith("/")) {
+    return `${baseURL}/${path}`;
+  }
+  return `${baseURL}${path}`;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${API_URL}${path}`, init);
+  const res = await fetch(buildURL(API_URL, path), init);
   if (!res.ok) {
     const body = (await res.json().catch(() => ({}))) as APIError;
     const code = body.error?.code?.trim();
@@ -217,15 +231,18 @@ export function createFullSourceTXTExport(sourceID: string) {
 }
 
 export function exportDownloadURL(exportID: string) {
-  return `${API_URL}/api/exports/${exportID}/download`;
+  return buildURL(API_URL, `/api/exports/${exportID}/download`);
 }
 
 export function documentDownloadURL(id: string, format: "txt" | "chunks" | "json" = "txt") {
-  return `${API_URL}/api/documents/${id}/download?format=${format}`;
+  return `${buildURL(API_URL, `/api/documents/${id}/download`)}?format=${format}`;
 }
 
 export function youTubeAudioDownloadURL(audioFilePath: string) {
-  return `${PY_SERVICE_URL}/api/download-youtube-audio-file?path=${encodeURIComponent(audioFilePath)}`;
+  const downloadBase = PY_SERVICE_URL
+    ? buildURL(PY_SERVICE_URL, "/api/download-youtube-audio-file")
+    : "/youtube-audio-files";
+  return `${downloadBase}?path=${encodeURIComponent(audioFilePath)}`;
 }
 
 export function uploadAndTranscribeAudio(payload: {

@@ -1,0 +1,137 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-tgrag}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-tgrag}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    restart: unless-stopped
+    volumes:
+      - qdrant_data:/qdrant/storage
+
+  youtube-audio-service:
+    build:
+      context: ..
+      dockerfile: services/youtube_audio_service/Dockerfile
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    environment:
+      YOUTUBE_AUDIO_STORAGE_DIR: /srv/audio_storage
+      YTDLP_AUDIO_FORMAT: ${YTDLP_AUDIO_FORMAT:-mp3}
+      YTDLP_AUDIO_QUALITY: ${YTDLP_AUDIO_QUALITY:-5}
+      DEEPGRAM_API_KEY: ${DEEPGRAM_API_KEY:-}
+      DEEPGRAM_API_KEY_FALLBACK: ${DEEPGRAM_API_KEY_FALLBACK:-}
+      DEEPGRAM_API_KEYS: ${DEEPGRAM_API_KEYS:-}
+      DEEPGRAM_MODEL: ${DEEPGRAM_MODEL:-nova-3}
+      DEEPGRAM_DETECT_LANGUAGE: ${DEEPGRAM_DETECT_LANGUAGE:-1}
+      DEEPGRAM_SMART_FORMAT: ${DEEPGRAM_SMART_FORMAT:-1}
+      DEEPGRAM_PUNCTUATE: ${DEEPGRAM_PUNCTUATE:-1}
+      DEEPGRAM_PARAGRAPHS: ${DEEPGRAM_PARAGRAPHS:-0}
+      DEEPGRAM_CLIENT_TIMEOUT_SECONDS: ${DEEPGRAM_CLIENT_TIMEOUT_SECONDS:-900}
+      DEEPGRAM_REQUEST_TIMEOUT_SECONDS: ${DEEPGRAM_REQUEST_TIMEOUT_SECONDS:-7200}
+      DEEPGRAM_SDK_MAX_RETRIES: ${DEEPGRAM_SDK_MAX_RETRIES:-3}
+      DEEPGRAM_ATTEMPTS_PER_KEY: ${DEEPGRAM_ATTEMPTS_PER_KEY:-3}
+      DEEPGRAM_RETRY_BASE_SECONDS: ${DEEPGRAM_RETRY_BASE_SECONDS:-2}
+      DEEPGRAM_RETRY_MAX_SECONDS: ${DEEPGRAM_RETRY_MAX_SECONDS:-30}
+    volumes:
+      - youtube_audio_data:/srv/audio_storage
+
+  api:
+    build:
+      context: ..
+      dockerfile: backend/Dockerfile
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    environment:
+      POSTGRES_DSN: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-tgrag}?sslmode=disable
+      REDIS_ADDR: redis:6379
+      QDRANT_URL: http://qdrant:6333
+      APP_PORT: "8080"
+      PY_YOUTUBE_AUDIO_SERVICE_URL: http://youtube-audio-service:8090
+      MIGRATION_DIR: /srv/app/migrations
+      EXPORT_DIR: /srv/app/data/exports
+      FILESCAN_EXTRACT_DIR: /srv/app/data/filescan_extracts
+      TELEGRAM_SESSION_FILE: /srv/app/data/tg.session.json
+      HH_OUTPUT_DIR: /srv/app/data/hh_extractions
+    volumes:
+      - backend_runtime:/srv/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      qdrant:
+        condition: service_started
+      youtube-audio-service:
+        condition: service_started
+
+  tg-bot:
+    build:
+      context: ..
+      dockerfile: backend/Dockerfile
+    restart: unless-stopped
+    profiles: ["bot"]
+    command: ["/usr/local/bin/tg-rag-bot"]
+    env_file:
+      - ../.env
+    environment:
+      POSTGRES_DSN: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-tgrag}?sslmode=disable
+      REDIS_ADDR: redis:6379
+      QDRANT_URL: http://qdrant:6333
+      PY_YOUTUBE_AUDIO_SERVICE_URL: http://youtube-audio-service:8090
+      MIGRATION_DIR: /srv/app/migrations
+      EXPORT_DIR: /srv/app/data/exports
+      FILESCAN_EXTRACT_DIR: /srv/app/data/filescan_extracts
+      TELEGRAM_SESSION_FILE: /srv/app/data/tg.session.json
+      HH_OUTPUT_DIR: /srv/app/data/hh_extractions
+    volumes:
+      - backend_runtime:/srv/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      qdrant:
+        condition: service_started
+      youtube-audio-service:
+        condition: service_started
+
+  frontend:
+    build:
+      context: ..
+      dockerfile: frontend/Dockerfile
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_BIND_PORT:-80}:80"
+    depends_on:
+      api:
+        condition: service_started
+      youtube-audio-service:
+        condition: service_started
+
+volumes:
+  postgres_data:
+  redis_data:
+  qdrant_data:
+  youtube_audio_data:
+  backend_runtime:

@@ -97,6 +97,71 @@ Open:
 
 If `TG_BOT_TOKEN` is set, Docker Compose will also start the Telegram bot service (`tg-bot`).
 
+## Production Deploy
+
+For server deployment use the production compose file from [`deploy/docker-compose.prod.yml`](./deploy/docker-compose.prod.yml).
+
+1. Prepare env file:
+
+```bash
+cp .env.example .env
+```
+
+2. Fill in required secrets and production values:
+
+- `POSTGRES_PASSWORD`
+- `CORS_ALLOWED_ORIGIN`
+- `DEEPGRAM_API_KEY`
+- `MISTRAL_API_KEY`
+- `OPENAI_API_KEY`
+- `HH_CLIENT_ID`
+- `HH_CLIENT_SECRET`
+- `HH_USER_AGENT`
+- `TG_BOT_TOKEN` if the bot must run on the server
+
+3. Build and start:
+
+```bash
+docker compose -f deploy/docker-compose.prod.yml --env-file .env build
+docker compose -f deploy/docker-compose.prod.yml --env-file .env up -d
+```
+
+4. If you need the Telegram bot too:
+
+```bash
+docker compose -f deploy/docker-compose.prod.yml --env-file .env --profile bot up -d
+```
+
+5. Verify:
+
+```bash
+docker compose -f deploy/docker-compose.prod.yml --env-file .env ps
+docker compose -f deploy/docker-compose.prod.yml --env-file .env logs -f --tail=200
+curl http://127.0.0.1:${FRONTEND_BIND_PORT:-80}/health
+```
+
+The production frontend proxies `/api/*` to the Go API and `/youtube-audio-files` to the Python audio service, so the UI no longer depends on hardcoded `localhost` endpoints.
+
+## Reset / Cleanup
+
+Remove local runtime artifacts:
+
+```bash
+make clean-runtime
+```
+
+Clear application data from local Postgres without dropping migrations:
+
+```bash
+make reset-db
+```
+
+Fully reset local Docker state including volumes:
+
+```bash
+make reset-local-state
+```
+
 ## Environment Variables
 
 Core:
