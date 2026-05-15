@@ -16,6 +16,7 @@ import (
 	"tg-rag-ingestor/backend/internal/hhaccess"
 	"tg-rag-ingestor/backend/internal/hhpublic"
 	"tg-rag-ingestor/backend/internal/hhresumesearch"
+	"tg-rag-ingestor/backend/internal/hhtokens"
 	hhservice "tg-rag-ingestor/backend/internal/service"
 
 	"tg-rag-ingestor/backend/internal/export"
@@ -54,19 +55,19 @@ const (
 type state string
 
 const (
-	stateIdle             state = ""
-	stateAwaitTGDocument  state = "await_tg_document"
-	stateAwaitTGSource    state = "await_tg_source"
-	stateAwaitTGLinks     state = "await_tg_links"
-	stateAwaitYouTube     state = "await_youtube"
-	stateAwaitAudioFile   state = "await_audio_file"
-	stateAwaitJSONFile    state = "await_json_file"
-	stateAwaitFileUpload  state = "await_file_upload"
-	stateAwaitHHMode      state = "await_hh_mode"
-	stateAwaitHHVacancyID   state = "await_hh_vacancy_id"
+	stateIdle                  state = ""
+	stateAwaitTGDocument       state = "await_tg_document"
+	stateAwaitTGSource         state = "await_tg_source"
+	stateAwaitTGLinks          state = "await_tg_links"
+	stateAwaitYouTube          state = "await_youtube"
+	stateAwaitAudioFile        state = "await_audio_file"
+	stateAwaitJSONFile         state = "await_json_file"
+	stateAwaitFileUpload       state = "await_file_upload"
+	stateAwaitHHMode           state = "await_hh_mode"
+	stateAwaitHHVacancyID      state = "await_hh_vacancy_id"
 	stateAwaitHHExtractionDate state = "await_hh_extraction_date"
-	stateAwaitHHPublic      state = "await_hh_public_query"
-	stateAwaitHHPeople    state = "await_hh_people_query"
+	stateAwaitHHPublic         state = "await_hh_public_query"
+	stateAwaitHHPeople         state = "await_hh_people_query"
 )
 
 var fileUploadNativeExtensions = map[string]struct{}{
@@ -94,13 +95,13 @@ type Config struct {
 }
 
 type session struct {
-	State            state
-	HHOptions        []model.HHVacancyListItem
-	HHSelectedVacancyID string
+	State                 state
+	HHOptions             []model.HHVacancyListItem
+	HHSelectedVacancyID   string
 	HHSelectedVacancyName string
-	HHPublicDateFrom string
-	HHPublicDateTo   string
-	HHPeopleMaxItems int
+	HHPublicDateFrom      string
+	HHPublicDateTo        string
+	HHPeopleMaxItems      int
 }
 
 type Bot struct {
@@ -110,6 +111,7 @@ type Bot struct {
 	youtubeService   *youtube.Service
 	exportService    *export.Service
 	fileScanService  *filescan.Service
+	hhMu             sync.RWMutex
 	hhConfig         model.HHConfig
 	logger           *slog.Logger
 
@@ -143,6 +145,46 @@ func New(cfg Config, repo *storage.Repository, ingestionService *ingestion.Servi
 		allowedUsers:     parseAllowedUsers(cfg.AllowedUserIDs),
 		sessions:         make(map[int64]session),
 	}, nil
+}
+
+func (b *Bot) hhConfigSnapshot() model.HHConfig {
+	b.hhMu.RLock()
+	cfg := b.hhConfig
+	b.hhMu.RUnlock()
+	cfg.OnTokenRefresh = b.persistRefreshedHHTokens
+	return cfg
+}
+
+func (b *Bot) persistRefreshedHHTokens(ctx context.Context, token model.TokenResponse) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+
+	envPath, err := hhtokens.PersistHHTokens(token.AccessToken, token.RefreshToken)
+	if err != nil {
+		return err
+	}
+
+	b.hhMu.Lock()
+	if strings.TrimSpace(token.AccessToken) != "" {
+		b.hhConfig.AccessToken = strings.TrimSpace(token.AccessToken)
+	}
+	if strings.TrimSpace(token.RefreshToken) != "" {
+		b.hhConfig.RefreshToken = strings.TrimSpace(token.RefreshToken)
+	}
+	b.hhMu.Unlock()
+
+	if strings.TrimSpace(token.AccessToken) != "" {
+		_ = os.Setenv("HH_ACCESS_TOKEN", strings.TrimSpace(token.AccessToken))
+	}
+	if strings.TrimSpace(token.RefreshToken) != "" {
+		_ = os.Setenv("HH_REFRESH_TOKEN", strings.TrimSpace(token.RefreshToken))
+	}
+
+	b.logger.Info("hh refreshed oauth tokens persisted", "env_path", envPath)
+	return nil
 }
 
 func (b *Bot) Run(ctx context.Context) error {
@@ -780,20 +822,21 @@ func (b *Bot) runHHExtractionWithDates(chatID int64, vacancyID string, dateFrom,
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
 	defer cancel()
 
-	if strings.TrimSpace(b.hhConfig.AccessToken) == "" && strings.TrimSpace(b.hhConfig.RefreshToken) == "" {
+	cfg := b.hhConfigSnapshot()
+	if strings.TrimSpace(cfg.AccessToken) == "" && strings.TrimSpace(cfg.RefreshToken) == "" {
 		b.sendError(chatID, errors.New("HH не настроен: добавьте HH_ACCESS_TOKEN или HH_REFRESH_TOKEN в .env"))
 		return
 	}
 
 	extractionID := fmt.Sprintf("%s_%d", vacancyID, time.Now().Unix())
-	outputDir := filepath.Join(b.hhConfig.OutputDir, extractionID)
-	svc := hhservice.NewHHExtractionService(b.hhConfig, model.OSFileSystem{}, b.logger)
+	outputDir := filepath.Join(cfg.OutputDir, extractionID)
+	svc := hhservice.NewHHExtractionService(cfg, model.OSFileSystem{}, b.logger)
 	manifest, files, err := svc.Run(ctx, model.ExtractionRequest{
 		VacancyID:     vacancyID,
 		DateFrom:      dateFrom,
 		DateTo:        dateTo,
 		OutputDir:     outputDir,
-		SaveOriginals: b.hhConfig.SaveOriginalsDefault,
+		SaveOriginals: cfg.SaveOriginalsDefault,
 	})
 	if err != nil {
 		b.sendError(chatID, err)
@@ -827,7 +870,7 @@ func (b *Bot) runHHPublicSearch(chatID int64, rawQuery string, currentSession se
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
 	defer cancel()
 
-	svc := hhpublic.New(b.hhConfig, b.ingestionService, b.logger)
+	svc := hhpublic.New(b.hhConfigSnapshot(), b.ingestionService, b.logger)
 	result, err := svc.Import(ctx, hhpublic.ImportRequest{
 		Text:     req.Text,
 		DateFrom: req.DateFrom,
@@ -864,7 +907,7 @@ func (b *Bot) runHHPeopleSearch(chatID int64, rawQuery string, currentSession se
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
 	defer cancel()
 
-	svc := hhresumesearch.New(b.hhConfig, b.ingestionService, b.logger)
+	svc := hhresumesearch.New(b.hhConfigSnapshot(), b.ingestionService, b.logger)
 	result, err := svc.Import(ctx, hhresumesearch.ImportRequest{
 		Text:     req.Text,
 		MaxItems: req.MaxItems,
@@ -893,7 +936,7 @@ func (b *Bot) runHHAccessStatus(chatID int64) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	svc := hhaccess.New(b.hhConfig, b.logger)
+	svc := hhaccess.New(b.hhConfigSnapshot(), b.logger)
 	status, err := svc.GetStatus(ctx)
 	if err != nil {
 		b.sendError(chatID, err)
@@ -1035,15 +1078,16 @@ func (b *Bot) handleHHExtractionDateSelection(msg *Message, text string) {
 	sess := b.getSession(msg.Chat.ID)
 	b.setState(msg.Chat.ID, stateIdle)
 	_ = b.reply(msg.Chat.ID, fmt.Sprintf("Запустил HH extraction для `%s` (vacancy_id `%s`) за выбранный период.", sess.HHSelectedVacancyName, sess.HHSelectedVacancyID), mainKeyboard())
-	
+
 	go b.runHHExtractionWithDates(msg.Chat.ID, sess.HHSelectedVacancyID, dateFrom, dateTo)
 }
 
 func (b *Bot) loadHHVacancyCatalog(ctx context.Context) (*model.HHVacancyCatalog, error) {
-	if strings.TrimSpace(b.hhConfig.AccessToken) == "" && strings.TrimSpace(b.hhConfig.RefreshToken) == "" {
+	cfg := b.hhConfigSnapshot()
+	if strings.TrimSpace(cfg.AccessToken) == "" && strings.TrimSpace(cfg.RefreshToken) == "" {
 		return nil, errors.New("HH не настроен: добавьте HH_ACCESS_TOKEN или HH_REFRESH_TOKEN в .env")
 	}
-	return hhservice.NewHHVacancyCatalogService(b.hhConfig, b.logger).List(ctx)
+	return hhservice.NewHHVacancyCatalogService(cfg, b.logger).List(ctx)
 }
 
 func (b *Bot) sendSources(chatID int64) {

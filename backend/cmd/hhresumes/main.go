@@ -13,6 +13,7 @@ import (
 
 	"github.com/joho/godotenv"
 
+	"tg-rag-ingestor/backend/internal/hhtokens"
 	"tg-rag-ingestor/backend/internal/model"
 	hhservice "tg-rag-ingestor/backend/internal/service"
 )
@@ -41,6 +42,14 @@ func main() {
 		TokenURL:     envOr("HH_TOKEN_URL", model.DefaultHHTokenURL),
 		AuthURL:      envOr("HH_AUTH_URL", model.DefaultHHAuthURL),
 	}
+	cfg.OnTokenRefresh = func(ctx context.Context, token model.TokenResponse) error {
+		envPath, err := hhtokens.PersistHHTokens(token.AccessToken, token.RefreshToken)
+		if err != nil {
+			return err
+		}
+		logger.Info("hh refreshed oauth tokens persisted", "env_path", envPath)
+		return nil
+	}
 
 	if cfg.ClientID == "" || cfg.ClientSecret == "" || cfg.UserAgent == "" {
 		fatalf("HH_CLIENT_ID, HH_CLIENT_SECRET and HH_USER_AGENT must be set")
@@ -55,9 +64,14 @@ func main() {
 		if err != nil {
 			fatalf("oauth exchange failed: %v", err)
 		}
-		fmt.Println("Add to .env and restart:")
-		fmt.Printf("HH_ACCESS_TOKEN=%s\n", token.AccessToken)
-		fmt.Printf("HH_REFRESH_TOKEN=%s\n", token.RefreshToken)
+		envPath, err := hhtokens.PersistHHTokens(token.AccessToken, token.RefreshToken)
+		if err != nil {
+			fmt.Println("Could not save tokens to .env automatically. Add these values manually:")
+			fmt.Printf("HH_ACCESS_TOKEN=%s\n", token.AccessToken)
+			fmt.Printf("HH_REFRESH_TOKEN=%s\n", token.RefreshToken)
+			fatalf("persist oauth tokens failed: %v", err)
+		}
+		fmt.Printf("HH OAuth tokens saved to %s\n", envPath)
 		return
 	}
 

@@ -140,6 +140,90 @@ func TestClientRefreshOn401(t *testing.T) {
 	}
 }
 
+func TestClientRefreshOn403TokenExpired(t *testing.T) {
+	var resumeCalls int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/oauth/token" {
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(model.TokenResponse{
+				AccessToken:  "token-2",
+				RefreshToken: "refresh-2",
+				TokenType:    "bearer",
+				ExpiresIn:    3600,
+			})
+			return
+		}
+		call := atomic.AddInt32(&resumeCalls, 1)
+		if call == 1 {
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"errors":[{"type":"oauth","value":"token_expired","message":"expired"}]}`))
+			return
+		}
+		if r.Header.Get("Authorization") != "Bearer token-2" {
+			t.Fatalf("token was not refreshed, got %s", r.Header.Get("Authorization"))
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer server.Close()
+
+	cfg := testConfig(server.URL)
+	manager := auth.NewManager(cfg, testLogger())
+	client := New(cfg, manager, testLogger())
+
+	var out map[string]any
+	status, err := client.GetJSON(context.Background(), "/", nil, &out)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if status != http.StatusOK {
+		t.Fatalf("unexpected status: %d", status)
+	}
+	if atomic.LoadInt32(&resumeCalls) != 2 {
+		t.Fatalf("expected 2 calls after refresh, got %d", resumeCalls)
+	}
+}
+
+func TestClientRefreshWhenAccessTokenMissing(t *testing.T) {
+	var tokenCalls int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/oauth/token" {
+			atomic.AddInt32(&tokenCalls, 1)
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(model.TokenResponse{
+				AccessToken:  "token-from-refresh",
+				RefreshToken: "refresh-2",
+				TokenType:    "bearer",
+				ExpiresIn:    3600,
+			})
+			return
+		}
+		if r.Header.Get("Authorization") != "Bearer token-from-refresh" {
+			t.Fatalf("expected refreshed auth header, got %s", r.Header.Get("Authorization"))
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer server.Close()
+
+	cfg := testConfig(server.URL)
+	cfg.AccessToken = ""
+	manager := auth.NewManager(cfg, testLogger())
+	client := New(cfg, manager, testLogger())
+
+	var out map[string]any
+	status, err := client.GetJSON(context.Background(), "/", nil, &out)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if status != http.StatusOK {
+		t.Fatalf("unexpected status: %d", status)
+	}
+	if atomic.LoadInt32(&tokenCalls) != 1 {
+		t.Fatalf("expected one token refresh, got %d", tokenCalls)
+	}
+}
+
 func TestClientMapsAPIError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusForbidden)

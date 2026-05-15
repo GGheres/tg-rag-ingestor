@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
@@ -35,6 +36,7 @@ type Handler struct {
 	youtubeService   *youtube.Service
 	exportService    *export.Service
 	fileScanService  *filescan.Service
+	hhMu             sync.RWMutex
 	hhConfig         model.HHConfig
 	logger           *slog.Logger
 }

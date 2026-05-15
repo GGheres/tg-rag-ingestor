@@ -1,6 +1,7 @@
 package model
 
 import (
+	"context"
 	"time"
 )
 
@@ -37,6 +38,7 @@ type HHConfig struct {
 	RetryMaxBackoffMS    int
 	Concurrency          int
 	SaveOriginalsDefault bool
+	OnTokenRefresh       func(context.Context, TokenResponse) error
 }
 
 func (c HHConfig) WithDefaults() HHConfig {

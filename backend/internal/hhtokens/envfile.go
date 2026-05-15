@@ -1,4 +1,4 @@
-package api
+package hhtokens
 
 import (
 	"fmt"
@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-func findEnvFilePath() (string, error) {
+func FindEnvFilePath() (string, error) {
 	if explicit := strings.TrimSpace(os.Getenv("APP_ENV_FILE")); explicit != "" {
 		info, err := os.Stat(explicit)
 		if err != nil {
@@ -39,7 +39,21 @@ func findEnvFilePath() (string, error) {
 	return "", fmt.Errorf(".env file not found from %s upwards", wd)
 }
 
-func persistEnvValues(envPath string, updates map[string]string) error {
+func PersistHHTokens(accessToken, refreshToken string) (string, error) {
+	envPath, err := FindEnvFilePath()
+	if err != nil {
+		return "", err
+	}
+	if err := PersistEnvValues(envPath, map[string]string{
+		"HH_ACCESS_TOKEN":  accessToken,
+		"HH_REFRESH_TOKEN": refreshToken,
+	}); err != nil {
+		return "", err
+	}
+	return envPath, nil
+}
+
+func PersistEnvValues(envPath string, updates map[string]string) error {
 	data, err := os.ReadFile(envPath)
 	if err != nil {
 		return fmt.Errorf("read env file: %w", err)

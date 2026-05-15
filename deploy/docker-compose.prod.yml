@@ -68,12 +68,14 @@ services:
       QDRANT_URL: http://qdrant:6333
       APP_PORT: "8080"
       PY_YOUTUBE_AUDIO_SERVICE_URL: http://youtube-audio-service:8090
+      APP_ENV_FILE: /srv/app/.env
       MIGRATION_DIR: /srv/app/migrations
       EXPORT_DIR: /srv/app/data/exports
       FILESCAN_EXTRACT_DIR: /srv/app/data/filescan_extracts
       TELEGRAM_SESSION_FILE: /srv/app/data/tg.session.json
       HH_OUTPUT_DIR: /srv/app/data/hh_extractions
     volumes:
+      - ../.env:/srv/app/.env
       - backend_runtime:/srv/app/data
     depends_on:
       postgres:
@@ -99,12 +101,14 @@ services:
       REDIS_ADDR: redis:6379
       QDRANT_URL: http://qdrant:6333
       PY_YOUTUBE_AUDIO_SERVICE_URL: http://youtube-audio-service:8090
+      APP_ENV_FILE: /srv/app/.env
       MIGRATION_DIR: /srv/app/migrations
       EXPORT_DIR: /srv/app/data/exports
       FILESCAN_EXTRACT_DIR: /srv/app/data/filescan_extracts
       TELEGRAM_SESSION_FILE: /srv/app/data/tg.session.json
       HH_OUTPUT_DIR: /srv/app/data/hh_extractions
     volumes:
+      - ../.env:/srv/app/.env
       - backend_runtime:/srv/app/data
     depends_on:
       postgres:

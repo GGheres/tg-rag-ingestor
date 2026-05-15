@@ -216,6 +216,7 @@ export default function HHResumesPage() {
       setOauthResult(res);
       setOauthCode("");
       clearOAuthCodeFromURL();
+      await loadConfigAndExtractions({ silent: true });
       setError(null);
     } catch (err) {
       setError((err as Error).message);
@@ -278,11 +279,9 @@ export default function HHResumesPage() {
           </button>
         </form>
         {oauthResult ? (
-          <pre>
-            {`HH_ACCESS_TOKEN=${oauthResult.access_token}
-HH_REFRESH_TOKEN=${oauthResult.refresh_token}
-expires_in=${oauthResult.expires_in}`}
-          </pre>
+          <p className="success-text">
+            {oauthResult.note} Expires in: <strong>{oauthResult.expires_in}s</strong>
+          </p>
         ) : null}
       </div>
 
@@ -292,7 +291,7 @@ expires_in=${oauthResult.expires_in}`}
           <p>
             {config?.has_access_token || config?.has_refresh_token
               ? "Можно подтянуть вакансии автоматически из HH и выбрать нужную."
-              : "Сначала сохраните HH_ACCESS_TOKEN/HH_REFRESH_TOKEN в .env и перезапустите backend, затем загрузите вакансии."}
+              : "Сначала выполните HH OAuth, затем загрузите вакансии."}
           </p>
           <button
             className="btn"

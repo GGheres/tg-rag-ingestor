@@ -146,6 +146,7 @@ export type HHOAuthExchangeResponse = {
   token_type: string;
   expires_in: number;
   note: string;
+  env_path: string;
 };
 
 export type HHManagerAccount = {

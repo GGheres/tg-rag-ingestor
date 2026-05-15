@@ -21,6 +21,7 @@ type Manager struct {
 	logger *slog.Logger
 
 	mu           sync.RWMutex
+	refreshMu    sync.Mutex
 	accessToken  string
 	refreshToken string
 }
@@ -83,9 +84,42 @@ func (m *Manager) ExchangeCode(ctx context.Context, code string) (*model.TokenRe
 }
 
 func (m *Manager) Refresh(ctx context.Context) error {
+	return m.refresh(ctx, "", true)
+}
+
+func (m *Manager) EnsureAccessToken(ctx context.Context) error {
 	m.mu.RLock()
+	hasAccess := strings.TrimSpace(m.accessToken) != ""
+	hasRefresh := strings.TrimSpace(m.refreshToken) != ""
+	m.mu.RUnlock()
+	if hasAccess || !hasRefresh {
+		return nil
+	}
+	return m.refresh(ctx, "", false)
+}
+
+func (m *Manager) RefreshIfCurrent(ctx context.Context, failedAccessToken string) error {
+	return m.refresh(ctx, failedAccessToken, false)
+}
+
+func (m *Manager) refresh(ctx context.Context, failedAccessToken string, force bool) error {
+	m.refreshMu.Lock()
+	defer m.refreshMu.Unlock()
+
+	m.mu.RLock()
+	currentAccess := strings.TrimSpace(m.accessToken)
 	refresh := m.refreshToken
 	m.mu.RUnlock()
+
+	failedAccessToken = strings.TrimSpace(failedAccessToken)
+	if !force {
+		switch {
+		case failedAccessToken == "" && currentAccess != "":
+			return nil
+		case failedAccessToken != "" && currentAccess != "" && currentAccess != failedAccessToken:
+			return nil
+		}
+	}
 	if strings.TrimSpace(refresh) == "" {
 		return fmt.Errorf("no refresh token configured")
 	}
@@ -120,12 +154,13 @@ func (m *Manager) Refresh(ctx context.Context) error {
 		return fmt.Errorf("decode oauth refresh response: %w", err)
 	}
 
-	m.mu.Lock()
-	m.accessToken = token.AccessToken
-	if strings.TrimSpace(token.RefreshToken) != "" {
-		m.refreshToken = token.RefreshToken
+	updated := m.setTokenResponse(token)
+
+	if m.cfg.OnTokenRefresh != nil {
+		if err := m.cfg.OnTokenRefresh(ctx, updated); err != nil {
+			return fmt.Errorf("persist refreshed hh oauth tokens: %w", err)
+		}
 	}
-	m.mu.Unlock()
 
 	m.logger.Info("hh oauth token refreshed")
 	return nil
@@ -151,5 +186,22 @@ func (m *Manager) SetTokens(accessToken, refreshToken string) {
 	}
 	if strings.TrimSpace(refreshToken) != "" {
 		m.refreshToken = strings.TrimSpace(refreshToken)
+	}
+}
+
+func (m *Manager) setTokenResponse(token model.TokenResponse) model.TokenResponse {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if strings.TrimSpace(token.AccessToken) != "" {
+		m.accessToken = strings.TrimSpace(token.AccessToken)
+	}
+	if strings.TrimSpace(token.RefreshToken) != "" {
+		m.refreshToken = strings.TrimSpace(token.RefreshToken)
+	}
+	return model.TokenResponse{
+		AccessToken:  m.accessToken,
+		RefreshToken: m.refreshToken,
+		TokenType:    token.TokenType,
+		ExpiresIn:    token.ExpiresIn,
 	}
 }

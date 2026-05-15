@@ -126,6 +126,10 @@ func (c *Client) do(ctx context.Context, method, rawURL string, query url.Values
 			return nil, 0, err
 		}
 
+		if err := c.auth.EnsureAccessToken(ctx); err != nil {
+			return nil, 0, err
+		}
+
 		reqURL := rawURL
 		if query != nil {
 			parsed, err := url.Parse(rawURL)
@@ -179,8 +183,8 @@ func (c *Client) do(ctx context.Context, method, rawURL string, query url.Values
 		}
 		lastStatus = resp.StatusCode
 
-		if resp.StatusCode == http.StatusUnauthorized && attempt < maxAttempts-1 {
-			if refreshErr := c.auth.Refresh(ctx); refreshErr != nil {
+		if shouldRefreshAuth(resp.StatusCode, respBody) && attempt < maxAttempts-1 {
+			if refreshErr := c.auth.RefreshIfCurrent(ctx, accessToken); refreshErr != nil {
 				return respBody, resp.StatusCode, parseAPIError(resp.StatusCode, respBody)
 			}
 			continue
@@ -242,6 +246,26 @@ func parseAPIError(status int, body []byte) error {
 
 func shouldRetryStatus(status int) bool {
 	return status == http.StatusTooManyRequests || status >= 500
+}
+
+func shouldRefreshAuth(status int, body []byte) bool {
+	if status == http.StatusUnauthorized {
+		return true
+	}
+	if status != http.StatusForbidden {
+		return false
+	}
+
+	var resp model.HHErrorResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return false
+	}
+	for _, item := range resp.Errors {
+		if item.Type == "oauth" && item.Value == "token_expired" {
+			return true
+		}
+	}
+	return false
 }
 
 func jitterBackoff(base, max time.Duration, attempt int) time.Duration {

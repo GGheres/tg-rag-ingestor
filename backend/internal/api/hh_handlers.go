@@ -3,7 +3,9 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"html"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -17,44 +19,108 @@ import (
 	"tg-rag-ingestor/backend/internal/hhaccess"
 	"tg-rag-ingestor/backend/internal/hhpublic"
 	"tg-rag-ingestor/backend/internal/hhresumesearch"
+	"tg-rag-ingestor/backend/internal/hhtokens"
 	"tg-rag-ingestor/backend/internal/model"
 	hhservice "tg-rag-ingestor/backend/internal/service"
 )
 
-func (h *Handler) newHHService(managerAccountID string) *hhservice.HHExtractionService {
+type hhTokenPersistError struct {
+	err error
+}
+
+func (e *hhTokenPersistError) Error() string {
+	return e.err.Error()
+}
+
+func (e *hhTokenPersistError) Unwrap() error {
+	return e.err
+}
+
+func (h *Handler) hhConfigSnapshot() model.HHConfig {
+	h.hhMu.RLock()
 	cfg := h.hhConfig
+	h.hhMu.RUnlock()
+	cfg.OnTokenRefresh = h.persistRefreshedHHTokens
+	return cfg
+}
+
+func (h *Handler) saveHHTokens(accessToken, refreshToken string) (string, error) {
+	envPath, err := hhtokens.PersistHHTokens(accessToken, refreshToken)
+	if err != nil {
+		return "", err
+	}
+
+	h.hhMu.Lock()
+	if strings.TrimSpace(accessToken) != "" {
+		h.hhConfig.AccessToken = strings.TrimSpace(accessToken)
+	}
+	if strings.TrimSpace(refreshToken) != "" {
+		h.hhConfig.RefreshToken = strings.TrimSpace(refreshToken)
+	}
+	h.hhMu.Unlock()
+
+	if strings.TrimSpace(accessToken) != "" {
+		_ = os.Setenv("HH_ACCESS_TOKEN", strings.TrimSpace(accessToken))
+	}
+	if strings.TrimSpace(refreshToken) != "" {
+		_ = os.Setenv("HH_REFRESH_TOKEN", strings.TrimSpace(refreshToken))
+	}
+	return envPath, nil
+}
+
+func (h *Handler) persistRefreshedHHTokens(ctx context.Context, token model.TokenResponse) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+	envPath, err := h.saveHHTokens(token.AccessToken, token.RefreshToken)
+	if err != nil {
+		return err
+	}
+	h.logger.Info("hh refreshed oauth tokens persisted", "env_path", envPath)
+	return nil
+}
+
+func hasHHToken(cfg model.HHConfig) bool {
+	return strings.TrimSpace(cfg.AccessToken) != "" || strings.TrimSpace(cfg.RefreshToken) != ""
+}
+
+func (h *Handler) newHHService(managerAccountID string) *hhservice.HHExtractionService {
+	cfg := h.hhConfigSnapshot()
 	cfg.ManagerAccountID = strings.TrimSpace(managerAccountID)
 	return hhservice.NewHHExtractionService(cfg, model.OSFileSystem{}, h.logger)
 }
 
 func (h *Handler) newHHVacancyCatalogService() *hhservice.HHVacancyCatalogService {
-	return hhservice.NewHHVacancyCatalogService(h.hhConfig, h.logger)
+	return hhservice.NewHHVacancyCatalogService(h.hhConfigSnapshot(), h.logger)
 }
 
 func (h *Handler) newHHPublicVacancyService() *hhpublic.Service {
-	return hhpublic.New(h.hhConfig, h.ingestionService, h.logger)
+	return hhpublic.New(h.hhConfigSnapshot(), h.ingestionService, h.logger)
 }
 
 func (h *Handler) newHHAccessService() *hhaccess.Service {
-	return hhaccess.New(h.hhConfig, h.logger)
+	return hhaccess.New(h.hhConfigSnapshot(), h.logger)
 }
 
 func (h *Handler) newHHResumeSearchService() *hhresumesearch.Service {
-	return hhresumesearch.New(h.hhConfig, h.ingestionService, h.logger)
+	return hhresumesearch.New(h.hhConfigSnapshot(), h.ingestionService, h.logger)
 }
 
 // HHGetConfig returns current HH configuration status without secrets.
 func (h *Handler) HHGetConfig(w http.ResponseWriter, r *http.Request) {
+	cfg := h.hhConfigSnapshot()
 	svc := h.newHHService("")
-	configured := h.hhConfig.ClientID != "" && h.hhConfig.UserAgent != ""
+	configured := cfg.ClientID != "" && cfg.ClientSecret != "" && cfg.UserAgent != ""
 	writeJSON(w, http.StatusOK, map[string]any{
 		"configured":          configured,
-		"has_access_token":    strings.TrimSpace(h.hhConfig.AccessToken) != "",
-		"has_refresh_token":   strings.TrimSpace(h.hhConfig.RefreshToken) != "",
-		"user_agent":          h.hhConfig.UserAgent,
-		"output_dir":          h.hhConfig.OutputDir,
-		"redirect_uri":        h.hhConfig.RedirectURI,
-		"base_url":            h.hhConfig.BaseURL,
+		"has_access_token":    strings.TrimSpace(cfg.AccessToken) != "",
+		"has_refresh_token":   strings.TrimSpace(cfg.RefreshToken) != "",
+		"user_agent":          cfg.UserAgent,
+		"output_dir":          cfg.OutputDir,
+		"redirect_uri":        cfg.RedirectURI,
+		"base_url":            cfg.BaseURL,
 		"oauth_authorize_url": svc.AuthorizationURL(),
 	})
 }
@@ -73,30 +139,16 @@ func (h *Handler) HHExchangeCode(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "missing_code", "code is required")
 		return
 	}
-	svc := h.newHHService("")
-	token, err := svc.ExchangeCode(r.Context(), req.Code)
+	token, envPath, err := h.exchangeAndSaveHHCode(r.Context(), req.Code)
 	if err != nil {
+		var persistErr *hhTokenPersistError
+		if errors.As(err, &persistErr) {
+			writeError(w, http.StatusInternalServerError, "persist_tokens_failed", err.Error())
+			return
+		}
 		writeError(w, http.StatusBadRequest, "oauth_exchange_failed", err.Error())
 		return
 	}
-
-	envPath, err := findEnvFilePath()
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "env_file_not_found", err.Error())
-		return
-	}
-	if err := persistEnvValues(envPath, map[string]string{
-		"HH_ACCESS_TOKEN":  token.AccessToken,
-		"HH_REFRESH_TOKEN": token.RefreshToken,
-	}); err != nil {
-		writeError(w, http.StatusInternalServerError, "persist_tokens_failed", err.Error())
-		return
-	}
-
-	h.hhConfig.AccessToken = token.AccessToken
-	h.hhConfig.RefreshToken = token.RefreshToken
-	_ = os.Setenv("HH_ACCESS_TOKEN", token.AccessToken)
-	_ = os.Setenv("HH_REFRESH_TOKEN", token.RefreshToken)
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"access_token":  token.AccessToken,
@@ -108,9 +160,62 @@ func (h *Handler) HHExchangeCode(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (h *Handler) HHOAuthCallback(w http.ResponseWriter, r *http.Request) {
+	if oauthErr := strings.TrimSpace(r.URL.Query().Get("error")); oauthErr != "" {
+		description := strings.TrimSpace(r.URL.Query().Get("error_description"))
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = fmt.Fprintf(w, "<!doctype html><title>HH OAuth failed</title><h1>HH OAuth failed</h1><p>%s</p><p>%s</p>",
+			html.EscapeString(oauthErr),
+			html.EscapeString(description),
+		)
+		return
+	}
+
+	code := strings.TrimSpace(r.URL.Query().Get("code"))
+	if code == "" {
+		writeError(w, http.StatusBadRequest, "missing_code", "code query parameter is required")
+		return
+	}
+
+	_, envPath, err := h.exchangeAndSaveHHCode(r.Context(), code)
+	if err != nil {
+		status := http.StatusBadRequest
+		var persistErr *hhTokenPersistError
+		if errors.As(err, &persistErr) {
+			status = http.StatusInternalServerError
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(status)
+		_, _ = fmt.Fprintf(w, "<!doctype html><title>HH OAuth failed</title><h1>HH OAuth failed</h1><p>%s</p>",
+			html.EscapeString(err.Error()),
+		)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = fmt.Fprintf(w, "<!doctype html><title>HH OAuth saved</title><h1>HH OAuth tokens saved</h1><p>Tokens were saved to %s. You can close this tab and return to the app.</p>",
+		html.EscapeString(envPath),
+	)
+}
+
+func (h *Handler) exchangeAndSaveHHCode(ctx context.Context, code string) (*model.TokenResponse, string, error) {
+	svc := h.newHHService("")
+	token, err := svc.ExchangeCode(ctx, code)
+	if err != nil {
+		return nil, "", err
+	}
+	envPath, err := h.saveHHTokens(token.AccessToken, token.RefreshToken)
+	if err != nil {
+		return nil, "", &hhTokenPersistError{err: err}
+	}
+	return token, envPath, nil
+}
+
 // HHListVacancies returns available vacancies from HH grouped across manager accounts.
 func (h *Handler) HHListVacancies(w http.ResponseWriter, r *http.Request) {
-	if strings.TrimSpace(h.hhConfig.AccessToken) == "" && strings.TrimSpace(h.hhConfig.RefreshToken) == "" {
+	cfg := h.hhConfigSnapshot()
+	if !hasHHToken(cfg) {
 		writeError(w, http.StatusBadRequest, "hh_not_configured", "configure HH_ACCESS_TOKEN or HH_REFRESH_TOKEN in .env")
 		return
 	}
@@ -125,7 +230,8 @@ func (h *Handler) HHListVacancies(w http.ResponseWriter, r *http.Request) {
 
 // HHGetAccessStatus returns current employer HH paid-access status, method groups, and resume limits.
 func (h *Handler) HHGetAccessStatus(w http.ResponseWriter, r *http.Request) {
-	if strings.TrimSpace(h.hhConfig.AccessToken) == "" && strings.TrimSpace(h.hhConfig.RefreshToken) == "" {
+	cfg := h.hhConfigSnapshot()
+	if !hasHHToken(cfg) {
 		writeError(w, http.StatusBadRequest, "hh_not_configured", "configure HH_ACCESS_TOKEN or HH_REFRESH_TOKEN in .env")
 		return
 	}
@@ -140,7 +246,8 @@ func (h *Handler) HHGetAccessStatus(w http.ResponseWriter, r *http.Request) {
 
 // HHGetPayableActions returns active paid HH API services for the current employer.
 func (h *Handler) HHGetPayableActions(w http.ResponseWriter, r *http.Request) {
-	if strings.TrimSpace(h.hhConfig.AccessToken) == "" && strings.TrimSpace(h.hhConfig.RefreshToken) == "" {
+	cfg := h.hhConfigSnapshot()
+	if !hasHHToken(cfg) {
 		writeError(w, http.StatusBadRequest, "hh_not_configured", "configure HH_ACCESS_TOKEN or HH_REFRESH_TOKEN in .env")
 		return
 	}
@@ -165,7 +272,8 @@ func (h *Handler) HHGetPayableActions(w http.ResponseWriter, r *http.Request) {
 
 // HHGetMethodAccess returns paid-method access groups for the current employer manager.
 func (h *Handler) HHGetMethodAccess(w http.ResponseWriter, r *http.Request) {
-	if strings.TrimSpace(h.hhConfig.AccessToken) == "" && strings.TrimSpace(h.hhConfig.RefreshToken) == "" {
+	cfg := h.hhConfigSnapshot()
+	if !hasHHToken(cfg) {
 		writeError(w, http.StatusBadRequest, "hh_not_configured", "configure HH_ACCESS_TOKEN or HH_REFRESH_TOKEN in .env")
 		return
 	}
@@ -190,7 +298,8 @@ func (h *Handler) HHGetMethodAccess(w http.ResponseWriter, r *http.Request) {
 
 // HHGetResumeLimits returns the current manager resume-view daily limits.
 func (h *Handler) HHGetResumeLimits(w http.ResponseWriter, r *http.Request) {
-	if strings.TrimSpace(h.hhConfig.AccessToken) == "" && strings.TrimSpace(h.hhConfig.RefreshToken) == "" {
+	cfg := h.hhConfigSnapshot()
+	if !hasHHToken(cfg) {
 		writeError(w, http.StatusBadRequest, "hh_not_configured", "configure HH_ACCESS_TOKEN or HH_REFRESH_TOKEN in .env")
 		return
 	}
@@ -249,7 +358,8 @@ func (h *Handler) HHImportPublicVacancies(w http.ResponseWriter, r *http.Request
 
 // HHImportGlobalResumes imports globally searched HH resumes into the generic JSON ingestion flow.
 func (h *Handler) HHImportGlobalResumes(w http.ResponseWriter, r *http.Request) {
-	if strings.TrimSpace(h.hhConfig.AccessToken) == "" && strings.TrimSpace(h.hhConfig.RefreshToken) == "" {
+	cfg := h.hhConfigSnapshot()
+	if !hasHHToken(cfg) {
 		writeError(w, http.StatusBadRequest, "hh_not_configured", "configure HH_ACCESS_TOKEN or HH_REFRESH_TOKEN in .env")
 		return
 	}
@@ -300,15 +410,16 @@ func (h *Handler) HHStartExtraction(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "missing_vacancy_id", "vacancy_id is required")
 		return
 	}
-	if strings.TrimSpace(h.hhConfig.AccessToken) == "" && strings.TrimSpace(h.hhConfig.RefreshToken) == "" {
+	cfg := h.hhConfigSnapshot()
+	if !hasHHToken(cfg) {
 		writeError(w, http.StatusBadRequest, "hh_not_configured", "configure HH_ACCESS_TOKEN or HH_REFRESH_TOKEN in .env")
 		return
 	}
 
 	extractionID := fmt.Sprintf("%s_%d", strings.TrimSpace(req.VacancyID), time.Now().Unix())
-	outputDir := filepath.Join(h.hhConfig.OutputDir, extractionID)
+	outputDir := filepath.Join(cfg.OutputDir, extractionID)
 	svc := h.newHHService(req.ManagerAccountID)
-	saveOriginals := resolveOptionalBool(req.SaveOriginals, h.hhConfig.SaveOriginalsDefault)
+	saveOriginals := resolveOptionalBool(req.SaveOriginals, cfg.SaveOriginalsDefault)
 
 	go func() {
 		request := model.ExtractionRequest{
@@ -336,7 +447,8 @@ func (h *Handler) HHStartExtraction(w http.ResponseWriter, r *http.Request) {
 
 // HHListExtractions returns extraction directories and manifest status.
 func (h *Handler) HHListExtractions(w http.ResponseWriter, r *http.Request) {
-	baseDir := h.hhConfig.OutputDir
+	cfg := h.hhConfigSnapshot()
+	baseDir := cfg.OutputDir
 	entries, err := os.ReadDir(baseDir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -403,12 +515,13 @@ func (h *Handler) HHListExtractions(w http.ResponseWriter, r *http.Request) {
 
 // HHGetExtraction returns manifest for extraction or running status.
 func (h *Handler) HHGetExtraction(w http.ResponseWriter, r *http.Request) {
+	cfg := h.hhConfigSnapshot()
 	extractionID := chi.URLParam(r, "extractionID")
-	manifestPath := filepath.Join(h.hhConfig.OutputDir, extractionID, "manifest.json")
+	manifestPath := filepath.Join(cfg.OutputDir, extractionID, "manifest.json")
 	data, err := os.ReadFile(manifestPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			extractionDir := filepath.Join(h.hhConfig.OutputDir, extractionID)
+			extractionDir := filepath.Join(cfg.OutputDir, extractionID)
 			if _, statErr := os.Stat(extractionDir); statErr == nil {
 				writeJSON(w, http.StatusOK, map[string]any{
 					"extraction_id": extractionID,
@@ -427,7 +540,7 @@ func (h *Handler) HHGetExtraction(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "parse_manifest_failed", err.Error())
 		return
 	}
-	files, _ := export.CollectExtractionFiles(model.OSFileSystem{}, filepath.Join(h.hhConfig.OutputDir, extractionID))
+	files, _ := export.CollectExtractionFiles(model.OSFileSystem{}, filepath.Join(cfg.OutputDir, extractionID))
 	writeJSON(w, http.StatusOK, map[string]any{
 		"extraction_id": extractionID,
 		"status":        "done",
@@ -438,6 +551,7 @@ func (h *Handler) HHGetExtraction(w http.ResponseWriter, r *http.Request) {
 
 // HHDownloadFile serves extraction file.
 func (h *Handler) HHDownloadFile(w http.ResponseWriter, r *http.Request) {
+	cfg := h.hhConfigSnapshot()
 	extractionID := chi.URLParam(r, "extractionID")
 	filename := chi.URLParam(r, "filename")
 	if strings.Contains(filename, "..") {
@@ -448,9 +562,9 @@ func (h *Handler) HHDownloadFile(w http.ResponseWriter, r *http.Request) {
 	subdir := r.URL.Query().Get("subdir")
 	var filePath string
 	if subdir == "originals" {
-		filePath = filepath.Join(h.hhConfig.OutputDir, extractionID, "originals", filename)
+		filePath = filepath.Join(cfg.OutputDir, extractionID, "originals", filename)
 	} else {
-		filePath = filepath.Join(h.hhConfig.OutputDir, extractionID, filename)
+		filePath = filepath.Join(cfg.OutputDir, extractionID, filename)
 	}
 
 	f, err := os.Open(filePath)

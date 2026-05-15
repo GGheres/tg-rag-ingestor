@@ -116,6 +116,7 @@ cp .env.example .env
 - `OPENAI_API_KEY`
 - `HH_CLIENT_ID`
 - `HH_CLIENT_SECRET`
+- `HH_REDIRECT_URI` (`https://<your-domain>/api/hh/oauth/callback` for automatic token save through the production frontend proxy)
 - `HH_USER_AGENT`
 - `TG_BOT_TOKEN` if the bot must run on the server
 
@@ -166,6 +167,7 @@ make reset-local-state
 
 Core:
 - `POSTGRES_DSN`
+- `APP_ENV_FILE` (optional explicit path to writable `.env`, used for automatic HH token persistence)
 - `REDIS_ADDR`
 - `QDRANT_URL`
 - `APP_PORT`
@@ -379,6 +381,7 @@ Recognized but not extracted:
 ## API (HeadHunter Employer)
 
 - `GET /api/hh/config`
+- `GET /api/hh/oauth/callback`
 - `POST /api/hh/oauth/exchange`
 - `POST /api/hh/extract`
 - `GET /api/hh/extractions`
@@ -434,6 +437,7 @@ make check
 
 # HH CLI extraction
 cd backend && go run ./cmd/hhresumes --vacancy=12345678 --save-originals
+cd backend && go run ./cmd/hhresumes --auth-code=<CODE>
 ```
 
 ## Notes
@@ -451,4 +455,5 @@ cd backend && go run ./cmd/hhresumes --vacancy=12345678 --save-originals
 - Local-folder RAG export now routes text extraction through Mistral OCR for every file type; local PDF/text fallback extractors are disabled.
 - Legacy `.doc` files with text/html payload are auto-converted to temporary `.docx` before Mistral OCR, and OCR calls retry on transient network errors.
 - HH employer API endpoints can return `403/404/429`, `quota_exceeded`, `no_available_service`, and `cant_view_contacts`; extractor handles retries/backoff/rate-limit and preserves partial results.
+- HH OAuth tokens are saved to `.env` after code exchange and after refresh. In Docker, `APP_ENV_FILE` must point to a writable mounted `.env` file; the production compose file mounts it at `/srv/app/.env`.
 - HH resume originals (PDF/RTF) may be unavailable for specific accounts/tariffs even if metadata is available.
